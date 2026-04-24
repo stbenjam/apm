@@ -27,7 +27,7 @@ from ..core.target_detection import should_compile_agents_md, should_compile_cla
 # Kept in sync with target_detection.detect_target().
 _VSCODE_TARGET_ALIASES = ("copilot", "agents")
 _KNOWN_TARGETS = (
-    "vscode", "claude", "cursor", "opencode", "codex", "all", "minimal",
+    "vscode", "claude", "cursor", "opencode", "codex", "gemini", "all", "minimal",
 ) + _VSCODE_TARGET_ALIASES
 
 
@@ -238,15 +238,11 @@ class AgentsCompiler:
             if should_compile_claude_md(routing_target):
                 results.append(self._compile_claude_md(config, primitives))
 
-            # Defensive: should never happen for a known target, but guards
-            # against future target_detection drift silently producing no-ops.
+            # Some targets (e.g. gemini, cursor) use the data-driven
+            # integration layer and don't need AGENTS.md/CLAUDE.md compilation.
             if not results:
-                self.errors.append(
-                    f"Target {config.target!r} did not route to any compiler. "
-                    "This is an internal bug in target routing."
-                )
                 return CompilationResult(
-                    success=False,
+                    success=True,
                     output_path="",
                     content="",
                     warnings=self.warnings.copy(),

@@ -260,6 +260,35 @@ KNOWN_TARGETS: Dict[str, TargetProfile] = {
         user_root_dir=".config/opencode",
         unsupported_user_primitives=("hooks",),
     ),
+    # Gemini CLI -- ~/.gemini/ is the documented user-level config directory.
+    # Instructions deploy as individual .md files to .gemini/rules/; gemini-cli's
+    # JIT directory discovery or @import syntax picks them up from GEMINI.md.
+    # Commands are TOML files under .gemini/commands/.
+    # Hooks merge into .gemini/settings.json (same pattern as Claude Code).
+    # Ref: https://geminicli.com/docs/cli/gemini-md/
+    # Ref: https://geminicli.com/docs/reference/configuration/
+    "gemini": TargetProfile(
+        name="gemini",
+        root_dir=".gemini",
+        primitives={
+            "instructions": PrimitiveMapping(
+                "rules", ".md", "gemini_rules"
+            ),
+            "commands": PrimitiveMapping(
+                "commands", ".toml", "gemini_command"
+            ),
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard"
+            ),
+            "hooks": PrimitiveMapping(
+                "hooks", ".json", "gemini_hooks"
+            ),
+        },
+        auto_create=False,
+        detect_by_dir=True,
+        user_supported=True,
+        user_root_dir=".gemini",
+    ),
     # Codex CLI: skills use the cross-tool .agents/ dir (agent skills standard),
     # agents are TOML under .codex/agents/, hooks merge into .codex/hooks.json.
     # Instructions are compile-only (AGENTS.md) -- not installed.

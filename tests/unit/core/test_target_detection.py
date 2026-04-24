@@ -170,7 +170,7 @@ class TestDetectTarget:
         )
         
         assert target == "minimal"
-        assert "no .github/" in reason
+        assert "no target folder found" in reason
 
 
 class TestShouldIntegrateVscode:

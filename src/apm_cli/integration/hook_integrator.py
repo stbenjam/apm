@@ -101,6 +101,11 @@ _MERGE_HOOK_TARGETS: dict[str, _MergeHookConfig] = {
         target_key="codex",
         require_dir=True,
     ),
+    "gemini": _MergeHookConfig(
+        config_filename="settings.json",
+        target_key="gemini",
+        require_dir=True,
+    ),
 }
 
 

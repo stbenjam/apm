@@ -4,7 +4,7 @@ sidebar:
   order: 1
 ---
 
-Compilation is **optional for most users**. If your team uses GitHub Copilot, Claude, or Cursor, `apm install` deploys all primitives in their native format -- you can skip this guide entirely. For OpenCode, `apm install` deploys agents, commands, skills, and MCP, but instructions require `apm compile` to generate the `AGENTS.md` that OpenCode reads. For Codex, `apm install` deploys skills, agents, and hooks natively, but instructions require `apm compile`. `apm compile` is also needed for Gemini or other tools that read single-root-file formats.
+Compilation is **optional for most users**. If your team uses GitHub Copilot, Claude, Cursor, or Gemini, `apm install` deploys all primitives in their native format -- you can skip this guide entirely. For OpenCode, `apm install` deploys agents, commands, skills, and MCP, but instructions require `apm compile` to generate the `AGENTS.md` that OpenCode reads. For Codex, `apm install` deploys skills, agents, and hooks natively, but instructions require `apm compile`.
 
 **Solving the AI agent scalability problem through constraint satisfaction optimization**
 
@@ -447,9 +447,9 @@ Different AI tools get different levels of support from `apm install` vs `apm co
 | Cursor | `.cursor/rules/`, `.cursor/agents/`, `.cursor/skills/`, `.cursor/hooks.json`, `.cursor/mcp.json` | `AGENTS.md` (optional) | **Full** |
 | OpenCode | `.opencode/agents/`, `.opencode/commands/`, `.opencode/skills/`, `opencode.json` (MCP) | Via `AGENTS.md` | **Full** |
 | Codex CLI | `.agents/skills/`, `.codex/agents/`, `.codex/hooks.json` | `AGENTS.md` (instructions) | **Full** |
-| Gemini | -- | `GEMINI.md` | Instructions via compile |
+| Gemini | `.gemini/rules/`, `.gemini/commands/`, `.gemini/skills/`, `.gemini/settings.json` (MCP, hooks) | Via `GEMINI.md` | **Full** |
 
-For Copilot, Claude, and Cursor users, `apm install` handles everything natively. OpenCode and Codex users should also run `apm compile` to generate `AGENTS.md` for instructions. Compilation is the bridge that brings instruction support to tools that do not yet have first-class APM integration.
+For Copilot, Claude, Cursor, and Gemini users, `apm install` handles everything natively. OpenCode and Codex users should also run `apm compile` to generate `AGENTS.md` for instructions. Compilation is the bridge that brings instruction support to tools that do not yet have first-class APM integration.
 
 ## Theoretical Foundations
 

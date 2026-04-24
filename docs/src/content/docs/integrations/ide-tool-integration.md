@@ -150,7 +150,7 @@ apm install microsoft/apm-sample-package
 
 ### Optional: Compiled Context with AGENTS.md
 
-For tools that do not support granular primitive discovery (such as Gemini), `apm compile` produces an `AGENTS.md` file that merges instructions into a single document. This is not needed for GitHub Copilot, Claude, or Cursor, which read per-file instructions natively. OpenCode and Codex also read `AGENTS.md`, so run `apm compile` to deploy instructions there.
+For tools that do not support granular primitive discovery, `apm compile` produces an `AGENTS.md` file that merges instructions into a single document. This is not needed for GitHub Copilot, Claude, Cursor, or Gemini, which read per-file instructions natively. OpenCode and Codex also read `AGENTS.md`, so run `apm compile` to deploy instructions there.
 
 ```bash
 # Compile all local and dependency instructions into AGENTS.md
@@ -286,7 +286,7 @@ apm install ComposioHQ/awesome-claude-skills/mcp-builder
 
 ### Automatic Hook Integration
 
-APM automatically integrates hooks from installed packages. Hooks define lifecycle event handlers (e.g., `PreToolUse`, `PostToolUse`, `Stop`) supported by VS Code Copilot, Claude Code, and Cursor.
+APM automatically integrates hooks from installed packages. Hooks define lifecycle event handlers (e.g., `PreToolUse`, `PostToolUse`, `Stop`) supported by VS Code Copilot, Claude Code, Cursor, and Gemini.
 
 > **Note:** Hook packages must be authored in the target platform's native format. APM handles path rewriting and file placement but does not translate between hook schema formats (e.g., Claude's `command` key vs GitHub Copilot's `bash`/`powershell` keys, or event name casing differences).
 
@@ -319,7 +319,7 @@ apm install anthropics/claude-plugins-official/plugins/hookify
 
 ### Optional: Target-Specific Compilation
 
-Compilation is optional for Copilot, Claude, and Cursor, which read per-file instructions natively. For OpenCode and Codex, run `apm compile` to generate `AGENTS.md` for instructions. Also use it when targeting Gemini:
+Compilation is optional for Copilot, Claude, Cursor, and Gemini, which read per-file instructions natively. For OpenCode and Codex, run `apm compile` to generate `AGENTS.md` for instructions:
 
 ```bash
 # Generate all formats (default)

@@ -1,8 +1,8 @@
 """Target detection for auto-selecting compilation and integration targets.
 
 This module implements the auto-detection pattern for determining which agent
-targets (Copilot, Claude, Cursor, OpenCode, Codex) should be used based on
-existing project structure and configuration.
+targets (Copilot, Claude, Cursor, OpenCode, Codex, Gemini) should be used
+based on existing project structure and configuration.
 
 Detection priority (highest to lowest):
 1. Explicit --target flag (always wins)
@@ -13,6 +13,7 @@ Detection priority (highest to lowest):
    - .cursor/ only -> cursor
    - .opencode/ only -> opencode
    - .codex/ only -> codex
+   - .gemini/ only -> gemini
    - Multiple target folders -> all
    - None exist -> minimal (AGENTS.md only, no folder integration)
 
@@ -26,10 +27,10 @@ from typing import List, Literal, Optional, Tuple, Union
 import click
 
 # Valid target values (internal canonical form)
-TargetType = Literal["vscode", "claude", "cursor", "opencode", "codex", "all", "minimal"]
+TargetType = Literal["vscode", "claude", "cursor", "opencode", "codex", "gemini", "all", "minimal"]
 
 # User-facing target values (includes aliases accepted by CLI)
-UserTargetType = Literal["copilot", "vscode", "agents", "claude", "cursor", "opencode", "codex", "all", "minimal"]
+UserTargetType = Literal["copilot", "vscode", "agents", "claude", "cursor", "opencode", "codex", "gemini", "all", "minimal"]
 
 
 def detect_target(
@@ -61,9 +62,11 @@ def detect_target(
             return "opencode", "explicit --target flag"
         elif explicit_target == "codex":
             return "codex", "explicit --target flag"
+        elif explicit_target == "gemini":
+            return "gemini", "explicit --target flag"
         elif explicit_target == "all":
             return "all", "explicit --target flag"
-    
+
     # Priority 2: apm.yml target setting
     if config_target:
         if config_target in ("copilot", "vscode", "agents"):
@@ -76,6 +79,8 @@ def detect_target(
             return "opencode", "apm.yml target"
         elif config_target == "codex":
             return "codex", "apm.yml target"
+        elif config_target == "gemini":
+            return "gemini", "apm.yml target"
         elif config_target == "all":
             return "all", "apm.yml target"
     
@@ -85,6 +90,7 @@ def detect_target(
     cursor_exists = (project_root / ".cursor").is_dir()
     opencode_exists = (project_root / ".opencode").is_dir()
     codex_exists = (project_root / ".codex").is_dir()
+    gemini_exists = (project_root / ".gemini").is_dir()
     detected = []
     if github_exists:
         detected.append(".github/")
@@ -96,6 +102,8 @@ def detect_target(
         detected.append(".opencode/")
     if codex_exists:
         detected.append(".codex/")
+    if gemini_exists:
+        detected.append(".gemini/")
 
     if len(detected) >= 2:
         return "all", f"detected {' and '.join(detected)} folders"
@@ -109,9 +117,10 @@ def detect_target(
         return "opencode", "detected .opencode/ folder"
     elif codex_exists:
         return "codex", "detected .codex/ folder"
+    elif gemini_exists:
+        return "gemini", "detected .gemini/ folder"
     else:
-        # No known target folders exist - minimal output
-        return "minimal", "no .github/, .claude/, .cursor/, .opencode/, or .codex/ folder found"
+        return "minimal", "no target folder found"
 
 
 def should_integrate_vscode(target: TargetType) -> bool:
@@ -174,6 +183,18 @@ def should_integrate_codex(target: TargetType) -> bool:
     return target in ("codex", "all")
 
 
+def should_integrate_gemini(target: TargetType) -> bool:
+    """Check if Gemini CLI integration should be performed.
+
+    Args:
+        target: The detected or configured target
+
+    Returns:
+        bool: True if Gemini integration (commands, rules, skills) should run
+    """
+    return target in ("gemini", "all")
+
+
 def should_compile_agents_md(target: TargetType) -> bool:
     """Check if AGENTS.md should be compiled.
     
@@ -220,8 +241,9 @@ def get_target_description(target: UserTargetType) -> str:
         "cursor": ".cursor/agents/ + .cursor/skills/ + .cursor/rules/",
         "opencode": "AGENTS.md + .opencode/agents/ + .opencode/commands/ + .opencode/skills/",
         "codex": "AGENTS.md + .agents/skills/ + .codex/agents/ + .codex/hooks.json",
-        "all": "AGENTS.md + CLAUDE.md + .github/ + .claude/ + .cursor/ + .opencode/ + .codex/ + .agents/",
-        "minimal": "AGENTS.md only (create .github/ or .claude/ for full integration)",
+        "gemini": ".gemini/commands/ + .gemini/rules/ + .gemini/skills/",
+        "all": "AGENTS.md + CLAUDE.md + .github/ + .claude/ + .cursor/ + .opencode/ + .codex/ + .gemini/ + .agents/",
+        "minimal": "AGENTS.md only (create a target folder for full integration)",
     }
     return descriptions.get(normalized, "unknown target")
 
@@ -232,7 +254,7 @@ def get_target_description(target: UserTargetType) -> str:
 
 #: The complete set of real (non-pseudo) canonical targets.
 #: "minimal" is intentionally excluded -- it is a fallback pseudo-target.
-ALL_CANONICAL_TARGETS = frozenset({"vscode", "claude", "cursor", "opencode", "codex"})
+ALL_CANONICAL_TARGETS = frozenset({"vscode", "claude", "cursor", "opencode", "codex", "gemini"})
 
 #: Alias mapping: user-facing name -> canonical internal name.
 TARGET_ALIASES: dict[str, str] = {
