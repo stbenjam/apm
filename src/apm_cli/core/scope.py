@@ -85,6 +85,17 @@ def get_lockfile_dir(scope: InstallScope) -> Path:
     return get_apm_dir(scope)
 
 
+def get_resolution_root(scope: InstallScope, project_root: Path) -> Path:
+    """Return the root for resolving local-package paths.
+
+    User scope resolves against CWD (the directory the user ran the
+    command from) rather than *project_root* which points to ``~/.apm/``.
+    """
+    if scope is InstallScope.USER:
+        return Path.cwd()
+    return project_root
+
+
 def ensure_user_dirs() -> Path:
     """Create ``~/.apm/`` and ``~/.apm/apm_modules/`` if they do not exist.
 

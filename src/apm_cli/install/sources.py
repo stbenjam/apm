@@ -105,8 +105,8 @@ class DependencySource(ABC):
     def acquire(self) -> Optional[Materialization]:
         """Materialise the dependency on disk and build PackageInfo.
 
-        Returns ``None`` to skip integration entirely (e.g. local dep at
-        user scope, copy/download failure).  Otherwise returns a
+        Returns ``None`` to skip integration entirely (e.g. copy/download
+        failure).  Otherwise returns a
         ``Materialization`` consumed by the integration template.
         """
 
@@ -137,24 +137,8 @@ class LocalDependencySource(DependencySource):
         diagnostics = ctx.diagnostics
         logger = ctx.logger
 
-        # User scope: relative paths would resolve against $HOME instead
-        # of cwd, producing wrong results.  Skip with a clear diagnostic.
-        if ctx.scope is InstallScope.USER:
-            diagnostics.warn(
-                f"Skipped local package '{dep_ref.local_path}' "
-                "-- local paths are not supported at user scope (--global). "
-                "Use a remote reference (owner/repo) instead.",
-                package=dep_ref.local_path,
-            )
-            if logger:
-                logger.verbose_detail(
-                    f"  Skipping {dep_ref.local_path} (local packages "
-                    "resolve against cwd, not $HOME)"
-                )
-            return None
-
         result_path = _copy_local_package(
-            dep_ref, install_path, ctx.project_root, logger=logger
+            dep_ref, install_path, ctx.resolution_root, logger=logger
         )
         if not result_path:
             diagnostics.error(

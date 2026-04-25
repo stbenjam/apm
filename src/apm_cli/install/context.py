@@ -34,6 +34,7 @@ class InstallContext:
     # ------------------------------------------------------------------
     project_root: Path
     apm_dir: Path
+    resolution_root: Path
 
     # ------------------------------------------------------------------
     # Inputs: populated by the caller from CLI args / APMPackage

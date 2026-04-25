@@ -31,13 +31,17 @@ import yaml
 
 @pytest.fixture
 def apm_command():
-    """Get the path to the APM CLI executable."""
+    """Get the path to the APM CLI executable from the local venv."""
+    root = Path(__file__).parent.parent.parent
+    venv_apm = root / ".venv" / "bin" / "apm"
+    if venv_apm.exists():
+        return str(venv_apm)
+    
+    # Fallback for CI environments where apm might be in the PATH
     apm_on_path = shutil.which("apm")
     if apm_on_path:
         return apm_on_path
-    venv_apm = Path(__file__).parent.parent.parent / ".venv" / "bin" / "apm"
-    if venv_apm.exists():
-        return str(venv_apm)
+        
     return "apm"
 
 
@@ -253,6 +257,47 @@ class TestGlobalManifestPlacement:
         assert any(str(local_package) in str(d) for d in apm_deps), (
             f"Package not recorded in manifest: {apm_deps}"
         )
+
+    def test_global_install_relative_path_resolves_to_cwd(
+        self, apm_command, fake_home, local_package
+    ):
+        """Installing a relative path with --global resolves against CWD, not $HOME."""
+        work_dir = fake_home / "workdir"
+        work_dir.mkdir()
+        
+        # Create a package inside workdir
+        rel_pkg = work_dir / "my-rel-pkg"
+        rel_pkg.mkdir()
+        (rel_pkg / "apm.yml").write_text(yaml.dump({"name": "my-rel-pkg", "version": "1.0.0"}))
+        (rel_pkg / ".apm").mkdir()
+        (rel_pkg / ".apm" / "instructions").mkdir()
+        (rel_pkg / ".apm" / "instructions" / "test.md").write_text("# Test")
+
+        result = _run_apm(
+            apm_command,
+            ["install", "--global", "./my-rel-pkg"],
+            work_dir,
+            fake_home,
+        )
+        assert result.returncode == 0
+
+        # Verify it was copied to apm_modules under ~/.apm/
+        # Relative paths are recorded as absolute in apm.yml when installed via CLI
+        # for user scope to avoid ambiguity.
+        user_manifest = fake_home / ".apm" / "apm.yml"
+        data = yaml.safe_load(user_manifest.read_text())
+        apm_deps = data.get("dependencies", {}).get("apm", [])
+        
+        # It should be recorded with its absolute POSIX path (forward slashes)
+        expected_path = rel_pkg.resolve().as_posix()
+        assert any(expected_path in str(d) for d in apm_deps), (
+            f"Package absolute path not recorded in manifest: {apm_deps}"
+        )
+
+        # And it should actually be installed (copied)
+        installed_dir = fake_home / ".apm" / "apm_modules" / "_local" / "my-rel-pkg"
+        assert installed_dir.is_dir(), "Package was not copied to apm_modules"
+        assert (installed_dir / ".apm" / "instructions" / "test.md").exists()
 
     def test_user_manifest_does_not_pollute_cwd(
         self, apm_command, fake_home, local_package

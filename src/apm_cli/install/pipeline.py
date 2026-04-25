@@ -100,7 +100,7 @@ def run_install_pipeline(
     except ImportError:
         raise RuntimeError("APM dependency system not available")
 
-    from ..core.scope import InstallScope, get_deploy_root, get_apm_dir
+    from ..core.scope import InstallScope, get_deploy_root, get_apm_dir, get_resolution_root
 
     if scope is None:
         scope = InstallScope.PROJECT
@@ -136,6 +136,7 @@ def run_install_pipeline(
     ctx = InstallContext(
         project_root=project_root,
         apm_dir=apm_dir,
+        resolution_root=get_resolution_root(scope, project_root),
         apm_package=apm_package,
         update_refs=update_refs,
         verbose=verbose,

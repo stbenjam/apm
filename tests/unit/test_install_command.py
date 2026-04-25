@@ -802,6 +802,23 @@ class TestInstallGlobalFlag:
             finally:
                 os.chdir(self.original_dir)
 
+    def test_global_local_path_uses_posix_slashes(self):
+        """Canonicalized local paths use forward slashes, even from Windows-style input."""
+        from apm_cli.models.apm_package import DependencyReference
+        from apm_cli.core.scope import InstallScope
+
+        dep_ref = DependencyReference.parse("./my-local-pkg")
+        # Simulate what install.py does, but starting from a Windows-style
+        # resolved path (e.g. C:\Users\alice\projects\my-local-pkg).
+        fake_windows_resolved = Path("C:/Users/alice/projects/my-local-pkg")
+        dep_ref.local_path = fake_windows_resolved.as_posix()
+
+        assert "\\" not in dep_ref.local_path, (
+            f"Backslashes in local_path: {dep_ref.local_path}"
+        )
+        assert dep_ref.local_path == "C:/Users/alice/projects/my-local-pkg"
+        assert "\\" not in dep_ref.to_canonical()
+
 # ---------------------------------------------------------------------------
 # Generic-host SSH-first validation tests
 # ---------------------------------------------------------------------------

@@ -21,13 +21,17 @@ import yaml
 
 @pytest.fixture
 def apm_command():
-    """Get the path to the APM CLI executable."""
+    """Get the path to the APM CLI executable from the local venv."""
+    root = Path(__file__).parent.parent.parent
+    venv_apm = root / ".venv" / "bin" / "apm"
+    if venv_apm.exists():
+        return str(venv_apm)
+    
+    # Fallback for CI environments where apm might be in the PATH
     apm_on_path = shutil.which("apm")
     if apm_on_path:
         return apm_on_path
-    venv_apm = Path(__file__).parent.parent.parent / ".venv" / "bin" / "apm"
-    if venv_apm.exists():
-        return str(venv_apm)
+        
     return "apm"
 
 
@@ -196,12 +200,9 @@ class TestLocalInstall:
         )
         # Should report the package as not recognizable (validation fails)
         combined = result.stdout + result.stderr
-        assert (
-            "not accessible" in combined.lower()
-            or "doesn't exist" in combined.lower()
-            or "no apm.yml" in combined.lower()
-            or "failed validation" in combined.lower()
-        ), f"Expected failure message. stdout: {result.stdout}, stderr: {result.stderr}"
+        assert "no apm.yml, skill.md, or plugin.json found" in combined.lower(), (
+            f"Expected failure message. stdout: {result.stdout}, stderr: {result.stderr}"
+        )
 
     def test_install_nonexistent_local_path_fails(self, temp_workspace, apm_command):
         """Installing a non-existent path should fail."""
@@ -214,12 +215,7 @@ class TestLocalInstall:
             timeout=60,
         )
         combined = result.stdout + result.stderr
-        assert (
-            "not accessible" in combined.lower()
-            or "doesn't exist" in combined.lower()
-            or "no apm.yml" in combined.lower()
-            or "failed validation" in combined.lower()
-        )
+        assert "path does not exist" in combined.lower()
 
     def test_install_local_from_apm_yml(self, temp_workspace, apm_command):
         """Install local deps declared in apm.yml (bare `apm install`)."""

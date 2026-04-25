@@ -231,6 +231,8 @@ def _validate_and_add_packages_to_apm_yml(packages, dry_run=False, dev=False, lo
     import tempfile
     from pathlib import Path
 
+    from ..core.scope import InstallScope
+
     apm_yml_path = manifest_path or Path(APM_YML_FILENAME)
 
     # Read current apm.yml
@@ -338,6 +340,19 @@ def _validate_and_add_packages_to_apm_yml(packages, dry_run=False, dev=False, lo
         # Canonicalize input
         try:
             dep_ref = DependencyReference.parse(package)
+            
+            # User scope: canonicalize local paths to absolute to ensure they
+            # resolve correctly regardless of CWD.
+            if scope is InstallScope.USER and dep_ref.is_local and dep_ref.local_path:
+                local_path = Path(dep_ref.local_path).expanduser()
+                if not local_path.is_absolute():
+                    local_path = Path.cwd() / local_path
+                dep_ref.local_path = local_path.resolve().as_posix()
+                if logger:
+                    logger.verbose_detail(
+                        f"  Resolved {package} -> {dep_ref.local_path} (user scope)"
+                    )
+
             canonical = dep_ref.to_canonical()
             identity = dep_ref.get_identity()
         except ValueError as e:
@@ -897,7 +912,17 @@ def _run_mcp_install(
 
 
 @click.command(
-    help="Install APM and MCP dependencies (supports APM packages, Claude skills (SKILL.md), and plugin collections (plugin.json); auto-creates apm.yml; use --allow-insecure for http:// packages)"
+    help="Install APM and MCP dependencies (supports APM packages, Claude skills (SKILL.md), and plugin collections (plugin.json); auto-creates apm.yml; use --allow-insecure for http:// packages)",
+    epilog=(
+        "\b\n"
+        "Examples:\n"
+        "  apm install                             Install deps from apm.yml\n"
+        "  apm install org/pkg                     Add a package and install\n"
+        "  apm install -g org/pkg                  Install to user scope (~/.apm/)\n"
+        "  apm install -g ./my-skill               Install a local skill globally\n"
+        "  apm install --skill my-skill org/bundle  Install one skill from bundle\n"
+        "  apm install --mcp fetch -- npx -y @mcp/server-fetch  MCP stdio\n"
+    ),
 )
 @click.argument("packages", nargs=-1)
 @click.option("--runtime", help="Target specific runtime only (copilot, codex, vscode)")
@@ -1053,6 +1078,7 @@ def install(ctx, packages, runtime, exclude, only, update, dry_run, force, verbo
         apm install --update                    # Update dependencies to latest Git refs
         apm install --dry-run                   # Show what would be installed
         apm install -g org/pkg1                 # Install to user scope (~/.apm/)
+        apm install -g ./my-skill               # Install a local skill globally
         apm install --allow-insecure http://...  # HTTP URL (needs allow_insecure)
         apm install --skill my-skill org/bundle  # Install one skill from bundle
         apm install --mcp io.github.github/github-mcp-server   # MCP registry

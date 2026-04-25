@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Local filesystem packages now install correctly when using user scope (`--global`). Relative paths are resolved against the current working directory at installation time and stored as absolute paths in the user manifest to ensure consistency. (#937)
 - Docs site auto-deploys again after bot-cut releases (now triggered on tag push). (#981)
 
 ### Maintainer tooling
