@@ -113,13 +113,20 @@ def temp_e2e_home():
         os.environ['_APM_ORIGINAL_HOME'] = original_home or ''
         os.environ['HOME'] = test_home
 
-        # Copy gcloud ADC credentials into the fake home so runtimes
-        # that rely on ADC (e.g. gemini-cli with Vertex AI) can auth.
-        real_gcloud = Path(original_home or '') / ".config" / "gcloud"
-        if real_gcloud.is_dir():
-            fake_gcloud = Path(test_home) / ".config" / "gcloud"
-            fake_gcloud.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(str(real_gcloud), str(fake_gcloud))
+        # Copy only the ADC credentials file (not the entire gcloud
+        # directory) so runtimes that rely on ADC (e.g. gemini-cli with
+        # Vertex AI) can auth without exposing service account keys.
+        real_adc = (
+            Path(original_home or '')
+            / ".config" / "gcloud" / "application_default_credentials.json"
+        )
+        if real_adc.is_file():
+            fake_adc = (
+                Path(test_home)
+                / ".config" / "gcloud" / "application_default_credentials.json"
+            )
+            fake_adc.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(real_adc), str(fake_adc))
 
 
         # Note: Do NOT override token environment variables here

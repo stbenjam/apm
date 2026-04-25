@@ -27,7 +27,7 @@ import os
 from pathlib import Path
 
 from .copilot import CopilotClientAdapter
-from ...utils.console import _rich_error, _rich_info, _rich_success
+from ...utils.console import _rich_error, _rich_success
 
 logger = logging.getLogger(__name__)
 

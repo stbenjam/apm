@@ -4,6 +4,7 @@ from apm_cli.core.target_detection import (
     detect_target,
     should_compile_agents_md,
     should_compile_claude_md,
+    should_compile_gemini_md,
     get_target_description,
     TargetParamType,
     VALID_TARGET_VALUES,
@@ -188,6 +189,10 @@ class TestShouldCompileAgentsMd:
         """AGENTS.md not compiled for claude target."""
         assert should_compile_agents_md("claude") is False
 
+    def test_gemini_target(self):
+        """AGENTS.md compiled for gemini target (GEMINI.md imports it)."""
+        assert should_compile_agents_md("gemini") is True
+
 
 class TestShouldCompileClaudeMd:
     """Tests for should_compile_claude_md function."""
@@ -207,6 +212,34 @@ class TestShouldCompileClaudeMd:
     def test_minimal_target(self):
         """CLAUDE.md not compiled for minimal target."""
         assert should_compile_claude_md("minimal") is False
+
+
+class TestShouldCompileGeminiMd:
+    """Tests for should_compile_gemini_md function."""
+
+    def test_gemini_target_returns_true(self):
+        """GEMINI.md compiled for gemini target."""
+        assert should_compile_gemini_md("gemini") is True
+
+    def test_all_target_returns_true(self):
+        """GEMINI.md compiled for all target."""
+        assert should_compile_gemini_md("all") is True
+
+    def test_claude_target_returns_false(self):
+        """GEMINI.md not compiled for claude target."""
+        assert should_compile_gemini_md("claude") is False
+
+    def test_vscode_target_returns_false(self):
+        """GEMINI.md not compiled for vscode target."""
+        assert should_compile_gemini_md("vscode") is False
+
+    def test_codex_target_returns_false(self):
+        """GEMINI.md not compiled for codex target."""
+        assert should_compile_gemini_md("codex") is False
+
+    def test_minimal_target_returns_false(self):
+        """GEMINI.md not compiled for minimal target."""
+        assert should_compile_gemini_md("minimal") is False
 
 
 class TestGetTargetDescription:

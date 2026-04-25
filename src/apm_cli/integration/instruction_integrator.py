@@ -28,7 +28,7 @@ class InstructionIntegrator(BaseIntegrator):
     * Copilot: ``.github/instructions/`` (verbatim, preserving applyTo:)
     * Cursor: ``.cursor/rules/`` (``.mdc`` format, applyTo: -> globs:)
     * Claude Code: ``.claude/rules/`` (``.md`` format, applyTo: -> paths:)
-    * Gemini CLI: ``.gemini/rules/`` (``.md`` format, frontmatter stripped)
+    * Gemini CLI: compile-only (GEMINI.md) -- no per-file rule deployment
     """
 
     def find_instruction_files(self, package_path: Path) -> List[Path]:
@@ -72,7 +72,6 @@ class InstructionIntegrator(BaseIntegrator):
 
         * ``cursor_rules``  -- convert ``applyTo:`` to ``globs:`` frontmatter
         * ``claude_rules``  -- convert ``applyTo:`` to ``paths:`` frontmatter
-        * ``gemini_rules``  -- strip frontmatter (Gemini CLI has no path-scoping)
         * anything else     -- copy verbatim (identity transform)
         """
         mapping = target.primitives.get("instructions")
@@ -93,7 +92,7 @@ class InstructionIntegrator(BaseIntegrator):
         deploy_dir.mkdir(parents=True, exist_ok=True)
 
         fmt = mapping.format_id
-        needs_rename = fmt in ("cursor_rules", "claude_rules", "gemini_rules")
+        needs_rename = fmt in ("cursor_rules", "claude_rules")
 
         files_integrated = 0
         files_skipped = 0
@@ -123,8 +122,6 @@ class InstructionIntegrator(BaseIntegrator):
                 links_resolved = self.copy_instruction_cursor(source_file, target_path)
             elif fmt == "claude_rules":
                 links_resolved = self.copy_instruction_claude(source_file, target_path)
-            elif fmt == "gemini_rules":
-                links_resolved = self.copy_instruction_gemini(source_file, target_path)
             else:
                 links_resolved = self.copy_instruction(source_file, target_path)
 
@@ -156,9 +153,9 @@ class InstructionIntegrator(BaseIntegrator):
         legacy_dir = project_root / effective_root / mapping.subdir
         if mapping.format_id == "cursor_rules":
             legacy_pattern = "*.mdc"
-        elif mapping.format_id in ("claude_rules", "gemini_rules"):
-            # Do not use a broad legacy glob for Claude/Gemini rules to avoid
-            # deleting user-authored .md files under .claude/rules/ or .gemini/rules/.
+        elif mapping.format_id == "claude_rules":
+            # Do not use a broad legacy glob for Claude rules to avoid
+            # deleting user-authored .md files under .claude/rules/.
             legacy_pattern = None
         else:
             legacy_pattern = "*.instructions.md"
@@ -387,35 +384,3 @@ class InstructionIntegrator(BaseIntegrator):
             managed_files=managed_files,
         )
 
-    # ------------------------------------------------------------------
-    # Gemini CLI Rules (.md, frontmatter stripped)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _convert_to_gemini_rules(content: str) -> str:
-        """Convert APM instruction content to Gemini CLI rules ``.md`` format.
-
-        Strips APM-specific frontmatter (``applyTo``, ``description``,
-        etc.) since Gemini CLI has no path-scoping mechanism.  Returns
-        the body as clean Markdown.
-
-        Ref: https://geminicli.com/docs/cli/gemini-md/
-        """
-        body = content
-
-        fm_match = re.match(r'^---\s*\n(.*?\n)?---\s*\n?', content, re.DOTALL)
-        if fm_match:
-            body = content[fm_match.end():]
-
-        return body.lstrip("\n")
-
-    def copy_instruction_gemini(self, source: Path, target: Path) -> int:
-        """Copy instruction file converted to Gemini CLI rules format.
-
-        Strips frontmatter and resolves links.
-        """
-        content = source.read_text(encoding='utf-8')
-        content = self._convert_to_gemini_rules(content)
-        content, links_resolved = self.resolve_links(content, source, target)
-        target.write_text(content, encoding='utf-8')
-        return links_resolved

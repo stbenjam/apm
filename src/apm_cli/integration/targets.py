@@ -261,8 +261,8 @@ KNOWN_TARGETS: Dict[str, TargetProfile] = {
         unsupported_user_primitives=("hooks",),
     ),
     # Gemini CLI -- ~/.gemini/ is the documented user-level config directory.
-    # Instructions deploy as individual .md files to .gemini/rules/; gemini-cli's
-    # JIT directory discovery or @import syntax picks them up from GEMINI.md.
+    # Instructions are compile-only (GEMINI.md) -- Gemini CLI does not read
+    # per-file rules from .gemini/rules/.
     # Commands are TOML files under .gemini/commands/.
     # Hooks merge into .gemini/settings.json (same pattern as Claude Code).
     # Ref: https://geminicli.com/docs/cli/gemini-md/
@@ -271,9 +271,6 @@ KNOWN_TARGETS: Dict[str, TargetProfile] = {
         name="gemini",
         root_dir=".gemini",
         primitives={
-            "instructions": PrimitiveMapping(
-                "rules", ".md", "gemini_rules"
-            ),
             "commands": PrimitiveMapping(
                 "commands", ".toml", "gemini_command"
             ),

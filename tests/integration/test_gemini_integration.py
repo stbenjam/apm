@@ -22,6 +22,8 @@ from apm_cli.integration import (
     SkillIntegrator,
 )
 from apm_cli.integration.command_integrator import CommandIntegrator
+from typing import Optional
+
 from apm_cli.models.apm_package import (
     APMPackage,
     GitReferenceType,
@@ -34,7 +36,7 @@ from apm_cli.models.apm_package import (
 def _make_package_info(
     package_dir: Path,
     name: str = "test-pkg",
-    package_type: PackageType = None,
+    package_type: Optional[PackageType] = None,
 ) -> PackageInfo:
     """Build a minimal ``PackageInfo`` for offline tests."""
     package = APMPackage(name=name, version="1.0.0", package_path=package_dir)
@@ -121,65 +123,6 @@ class TestGeminiCommandIntegration:
         )
         assert "prompt" in doc
         assert "description" not in doc
-
-
-@pytest.mark.integration
-class TestGeminiInstructionIntegration:
-    """Instructions: .instructions.md -> .gemini/rules/*.md (frontmatter stripped)"""
-
-    def setup_method(self):
-        self.tmp = tempfile.mkdtemp()
-        self.root = Path(self.tmp)
-        (self.root / ".gemini").mkdir()
-
-    def teardown_method(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def _create_instruction(self, name: str, apply_to: str, body: str) -> Path:
-        pkg = self.root / "apm_modules" / "test-pkg"
-        pkg.mkdir(parents=True, exist_ok=True)
-        (pkg / "apm.yml").write_text("name: test-pkg\nversion: 1.0.0\n")
-        inst_dir = pkg / ".apm" / "instructions"
-        inst_dir.mkdir(parents=True, exist_ok=True)
-        inst = inst_dir / f"{name}.instructions.md"
-        inst.write_text(
-            f"---\napplyTo: '{apply_to}'\ndescription: test rule\n---\n{body}\n"
-        )
-        return pkg
-
-    def test_deploys_md_with_frontmatter_stripped(self):
-        body = "Always use snake_case for variables."
-        pkg = self._create_instruction("naming", "**/*.py", body)
-        info = _make_package_info(pkg)
-        target = KNOWN_TARGETS["gemini"]
-
-        result = InstructionIntegrator().integrate_instructions_for_target(
-            target, info, self.root
-        )
-
-        assert result.files_integrated == 1
-        rule_path = self.root / ".gemini" / "rules" / "naming.md"
-        assert rule_path.exists()
-
-        content = rule_path.read_text()
-        assert "---" not in content
-        assert "applyTo" not in content
-        assert body in content
-
-    def test_body_content_preserved(self):
-        body = "## Heading\n\n- bullet one\n- bullet two\n\nParagraph."
-        pkg = self._create_instruction("style", "**/*.ts", body)
-        info = _make_package_info(pkg)
-        target = KNOWN_TARGETS["gemini"]
-
-        InstructionIntegrator().integrate_instructions_for_target(
-            target, info, self.root
-        )
-
-        content = (self.root / ".gemini" / "rules" / "style.md").read_text()
-        assert "## Heading" in content
-        assert "- bullet one" in content
-        assert "Paragraph." in content
 
 
 @pytest.mark.integration
@@ -371,27 +314,3 @@ class TestGeminiMultiTargetCoexistence:
         assert (self.root / ".github" / "prompts" / "review.prompt.md").exists()
         assert (self.root / ".gemini" / "commands" / "review.toml").exists()
 
-    def test_instructions_transformed_differently_per_target(self):
-        pkg = self._create_full_package()
-        info = _make_package_info(pkg)
-        copilot = KNOWN_TARGETS["copilot"]
-        gemini = KNOWN_TARGETS["gemini"]
-
-        inst = InstructionIntegrator()
-        inst.integrate_instructions_for_target(copilot, info, self.root)
-        inst.integrate_instructions_for_target(gemini, info, self.root)
-
-        copilot_path = (
-            self.root / ".github" / "instructions" / "style.instructions.md"
-        )
-        gemini_path = self.root / ".gemini" / "rules" / "style.md"
-        assert copilot_path.exists()
-        assert gemini_path.exists()
-
-        copilot_content = copilot_path.read_text()
-        gemini_content = gemini_path.read_text()
-
-        assert "applyTo" in copilot_content
-        assert "applyTo" not in gemini_content
-        assert "Use black." in copilot_content
-        assert "Use black." in gemini_content

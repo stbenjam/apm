@@ -281,7 +281,6 @@ class TestExhaustivenessChecks:
             "commands_gemini",
             "commands_opencode",
             "instructions",        # was instructions_copilot, aliased
-            "instructions_gemini",
             "rules_cursor",        # was instructions_cursor, aliased
             "rules_claude",        # was instructions_claude, aliased
             "skills",              # cross-target bucket

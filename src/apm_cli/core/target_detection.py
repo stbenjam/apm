@@ -125,9 +125,9 @@ def detect_target(
 
 def should_compile_agents_md(target: TargetType) -> bool:
     """Check if AGENTS.md should be compiled.
-    
-    AGENTS.md is generated for vscode, codex, all, and minimal targets.
-    It's the universal format that works everywhere.
+
+    AGENTS.md is generated for vscode, codex, gemini, all, and minimal
+    targets.  Gemini needs it because GEMINI.md imports AGENTS.md.
     
     Args:
         target: The detected or configured target
@@ -135,19 +135,31 @@ def should_compile_agents_md(target: TargetType) -> bool:
     Returns:
         bool: True if AGENTS.md should be generated
     """
-    return target in ("vscode", "opencode", "codex", "all", "minimal")
+    return target in ("vscode", "opencode", "codex", "gemini", "all", "minimal")
 
 
 def should_compile_claude_md(target: TargetType) -> bool:
     """Check if CLAUDE.md should be compiled.
-    
+
     Args:
         target: The detected or configured target
-        
+
     Returns:
         bool: True if CLAUDE.md should be generated
     """
     return target in ("claude", "all")
+
+
+def should_compile_gemini_md(target: TargetType) -> bool:
+    """Check if GEMINI.md should be compiled.
+
+    Args:
+        target: The detected or configured target
+
+    Returns:
+        bool: True if GEMINI.md should be generated
+    """
+    return target in ("gemini", "all")
 
 
 def get_target_description(target: UserTargetType) -> str:
@@ -169,8 +181,8 @@ def get_target_description(target: UserTargetType) -> str:
         "cursor": ".cursor/agents/ + .cursor/skills/ + .cursor/rules/",
         "opencode": "AGENTS.md + .opencode/agents/ + .opencode/commands/ + .opencode/skills/",
         "codex": "AGENTS.md + .agents/skills/ + .codex/agents/ + .codex/hooks.json",
-        "gemini": ".gemini/commands/ + .gemini/rules/ + .gemini/skills/ + .gemini/settings.json (MCP/hooks)",
-        "all": "AGENTS.md + CLAUDE.md + .github/ + .claude/ + .cursor/ + .opencode/ + .codex/ + .gemini/ + .agents/",
+        "gemini": "GEMINI.md + .gemini/commands/ + .gemini/skills/ + .gemini/settings.json (MCP/hooks)",
+        "all": "AGENTS.md + CLAUDE.md + GEMINI.md + .github/ + .claude/ + .cursor/ + .opencode/ + .codex/ + .gemini/ + .agents/",
         "minimal": "AGENTS.md only (create a target folder for full integration)",
     }
     return descriptions.get(normalized, "unknown target")
@@ -201,7 +213,7 @@ def normalize_target_list(
     - ``None`` -> ``None`` (auto-detect)
     - ``"claude"`` -> ``["claude"]``
     - ``"copilot"`` -> ``["vscode"]``  (alias resolution)
-    - ``"all"`` -> ``["claude", "codex", "copilot", "cursor", "opencode"]``
+    - ``"all"`` -> ``["claude", "codex", "cursor", "gemini", "opencode", "vscode"]``
     - ``["claude", "copilot"]`` -> ``["claude", "vscode"]``
     - Deduplicates while preserving first-seen order.
 

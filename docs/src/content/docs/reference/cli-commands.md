@@ -264,6 +264,8 @@ APM automatically detects which integrations to enable based on your project str
 - **Claude integration**: Enabled when `.claude/` directory exists
 - **Cursor integration**: Enabled when `.cursor/` directory exists
 - **OpenCode integration**: Enabled when `.opencode/` directory exists
+- **Codex integration**: Enabled when `.codex/` directory exists
+- **Gemini integration**: Enabled when `.gemini/` directory exists
 - All integrations can coexist in the same project
 
 **VSCode Integration (`.github/` present):**
@@ -370,6 +372,9 @@ apm uninstall -g microsoft/apm-sample-package
 | OpenCode agents | `.opencode/agents/*.md` |
 | OpenCode commands | `.opencode/commands/*.md` |
 | OpenCode skills | `.opencode/skills/{folder-name}/` |
+| Gemini commands | `.gemini/commands/*.toml` |
+| Gemini skills | `.gemini/skills/{folder-name}/` |
+| Gemini settings | `.gemini/settings.json` (hooks + MCP cleaned) |
 | Lockfile entries | `apm.lock.yaml` (removed packages + orphaned transitives) |
 
 **Behavior:**
@@ -597,6 +602,7 @@ apm pack -o dist/
 | `claude` | `.claude/` |
 | `cursor` | `.cursor/` |
 | `opencode` | `.opencode/` |
+| `gemini` | `.gemini/` |
 | `all` | all of the above |
 
 **Enriched lockfile example:**
@@ -1369,7 +1375,7 @@ When `--target` is not specified, APM auto-detects based on existing project str
 | `.github/` exists only | `vscode` | AGENTS.md + .github/ |
 | `.claude/` exists only | `claude` | CLAUDE.md + .claude/ |
 | `.codex/` exists | `codex` | AGENTS.md + .codex/ + .agents/ |
-| `.gemini/` exists | `gemini` | .gemini/settings.json |
+| `.gemini/` exists | `gemini` | GEMINI.md + .gemini/ |
 | Both folders exist | `all` | All outputs |
 | Neither folder exists | `minimal` | AGENTS.md only |
 
@@ -1390,10 +1396,11 @@ target: [claude, copilot]  # multiple targets -- only these are compiled/install
 
 | Target | Output Files | Best For |
 |--------|--------------|----------|
-| `vscode` | AGENTS.md, .github/prompts/, .github/agents/, .github/skills/ | GitHub Copilot, Cursor, Gemini |
+| `vscode` | AGENTS.md, .github/prompts/, .github/agents/, .github/skills/ | GitHub Copilot, Cursor |
 | `claude` | CLAUDE.md, .claude/commands/, SKILL.md | Claude Code, Claude Desktop |
 | `codex` | AGENTS.md, .agents/skills/, .codex/agents/, .codex/hooks.json | Codex CLI |
 | `opencode` | AGENTS.md, .opencode/agents/, .opencode/commands/, .opencode/skills/ | OpenCode |
+| `gemini` | GEMINI.md, .gemini/commands/, .gemini/skills/ | Gemini CLI |
 | `all` | All of the above | Universal compatibility |
 
 **Examples:**
@@ -1621,7 +1628,7 @@ export APM_TEMP_DIR=/tmp/apm-work
 
 ### `apm runtime` (Experimental) - Manage AI runtimes
 
-APM manages AI runtime installation and configuration automatically. Currently supports three runtimes: `copilot`, `codex`, and `llm`.
+APM manages AI runtime installation and configuration automatically. Currently supports four runtimes: `copilot`, `codex`, `llm`, and `gemini`.
 
 > See the [Agent Workflows guide](../../guides/agent-workflows/) for usage details.
 
@@ -1713,7 +1720,7 @@ apm runtime status
 ```
 
 **Output includes:**
-- Runtime preference order (copilot → codex → llm)
+- Runtime preference order (copilot → codex → gemini → llm)
 - Currently active runtime
 - Next steps if no runtime is available
 
