@@ -164,3 +164,97 @@ class TestGeminiConfigureMCPServer(unittest.TestCase):
 
     def test_supports_user_scope_is_true(self):
         self.assertTrue(self.adapter.supports_user_scope)
+
+
+class TestGeminiFormatServerConfig(unittest.TestCase):
+    """Verify _format_server_config produces Gemini-valid schema."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.gemini_dir = Path(self.tmp.name) / ".gemini"
+        self.gemini_dir.mkdir()
+        self._cwd_patcher = patch("os.getcwd", return_value=self.tmp.name)
+        self._cwd_patcher.start()
+
+        self.mock_registry_patcher = patch(
+            "apm_cli.adapters.client.copilot.SimpleRegistryClient"
+        )
+        self.mock_registry_class = self.mock_registry_patcher.start()
+
+        self.mock_integration_patcher = patch(
+            "apm_cli.adapters.client.copilot.RegistryIntegration"
+        )
+        self.mock_integration_class = self.mock_integration_patcher.start()
+
+        self.adapter = GeminiClientAdapter()
+
+    def tearDown(self):
+        self._cwd_patcher.stop()
+        self.mock_registry_patcher.stop()
+        self.mock_integration_patcher.stop()
+        self.tmp.cleanup()
+
+    def test_stdio_config_has_no_copilot_fields(self):
+        """stdio config must not contain type, tools, or id."""
+        server_info = {
+            "_raw_stdio": {
+                "command": "node",
+                "args": ["server.js"],
+                "env": {"KEY": "val"},
+            },
+            "name": "test-server",
+        }
+        config = self.adapter._format_server_config(server_info)
+        self.assertEqual(config["command"], "node")
+        self.assertEqual(config["args"], ["server.js"])
+        self.assertEqual(config["env"], {"KEY": "val"})
+        self.assertNotIn("type", config)
+        self.assertNotIn("tools", config)
+        self.assertNotIn("id", config)
+
+    def test_npm_package_config_has_no_copilot_fields(self):
+        """npm package config must not contain type, tools, or id."""
+        server_info = {
+            "packages": [{
+                "name": "@scope/mcp-server",
+                "registry_name": "npm",
+                "runtime_hint": "npx",
+            }],
+            "name": "test-server",
+        }
+        config = self.adapter._format_server_config(server_info)
+        self.assertEqual(config["command"], "npx")
+        self.assertIn("@scope/mcp-server", config["args"])
+        self.assertNotIn("type", config)
+        self.assertNotIn("tools", config)
+        self.assertNotIn("id", config)
+
+    def test_remote_http_uses_httpUrl(self):
+        """HTTP remotes must use httpUrl key, not url."""
+        server_info = {
+            "remotes": [{
+                "url": "https://api.example.com/mcp",
+                "transport_type": "http",
+            }],
+            "name": "remote-server",
+        }
+        config = self.adapter._format_server_config(server_info)
+        self.assertEqual(config["httpUrl"], "https://api.example.com/mcp")
+        self.assertNotIn("url", config)
+        self.assertNotIn("type", config)
+        self.assertNotIn("tools", config)
+        self.assertNotIn("id", config)
+
+    def test_remote_sse_uses_url(self):
+        """SSE remotes must use url key, not httpUrl."""
+        server_info = {
+            "remotes": [{
+                "url": "https://api.example.com/sse",
+                "transport_type": "sse",
+            }],
+            "name": "sse-server",
+        }
+        config = self.adapter._format_server_config(server_info)
+        self.assertEqual(config["url"], "https://api.example.com/sse")
+        self.assertNotIn("httpUrl", config)
+        self.assertNotIn("type", config)

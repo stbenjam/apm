@@ -314,3 +314,172 @@ class TestGeminiMultiTargetCoexistence:
         assert (self.root / ".github" / "prompts" / "review.prompt.md").exists()
         assert (self.root / ".gemini" / "commands" / "review.toml").exists()
 
+
+@pytest.mark.integration
+class TestGeminiHookIntegration:
+    """Hooks: merged into .gemini/settings.json with _apm_source markers."""
+
+    def setup_method(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        (self.root / ".gemini").mkdir()
+
+    def teardown_method(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _setup_hook_package(self, name: str = "test-hooks") -> PackageInfo:
+        pkg = self.root / "apm_modules" / name
+        hooks_dir = pkg / ".apm" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        (hooks_dir / "hooks.json").write_text(json.dumps({
+            "hooks": {
+                "preCommit": [
+                    {"type": "command", "command": "echo lint"}
+                ]
+            }
+        }))
+        return _make_package_info(pkg, name)
+
+    def test_hooks_merge_into_settings_json(self):
+        """Hooks are merged into .gemini/settings.json with _apm_source."""
+        from apm_cli.integration.hook_integrator import HookIntegrator
+        info = self._setup_hook_package()
+        target = KNOWN_TARGETS["gemini"]
+
+        integrator = HookIntegrator()
+        result = integrator.integrate_hooks_for_target(target, info, self.root)
+
+        assert result.files_integrated == 1
+        settings = json.loads(
+            (self.root / ".gemini" / "settings.json").read_text()
+        )
+        assert "hooks" in settings
+        assert "preCommit" in settings["hooks"]
+        assert settings["hooks"]["preCommit"][0]["_apm_source"] == "test-hooks"
+
+    def test_hooks_preserve_existing_mcp_servers(self):
+        """Hook merge must not clobber existing mcpServers in settings.json."""
+        settings_path = self.root / ".gemini" / "settings.json"
+        settings_path.write_text(json.dumps({
+            "mcpServers": {"my-server": {"command": "npx", "args": ["-y", "foo"]}},
+            "theme": "dark",
+        }))
+
+        from apm_cli.integration.hook_integrator import HookIntegrator
+        info = self._setup_hook_package()
+        target = KNOWN_TARGETS["gemini"]
+
+        integrator = HookIntegrator()
+        integrator.integrate_hooks_for_target(target, info, self.root)
+
+        settings = json.loads(settings_path.read_text())
+        assert settings["mcpServers"]["my-server"]["command"] == "npx"
+        assert settings["theme"] == "dark"
+        assert "hooks" in settings
+        assert "preCommit" in settings["hooks"]
+
+    def test_sync_removes_hook_entries_preserves_mcp(self):
+        """Sync removes APM-managed hook entries but preserves mcpServers."""
+        from apm_cli.integration.hook_integrator import HookIntegrator
+        settings_path = self.root / ".gemini" / "settings.json"
+        settings_path.write_text(json.dumps({
+            "mcpServers": {"srv": {"command": "echo"}},
+            "hooks": {
+                "preCommit": [
+                    {"_apm_source": "test-hooks", "hooks": [
+                        {"type": "command", "command": "echo lint"}
+                    ]},
+                ]
+            }
+        }))
+
+        integrator = HookIntegrator()
+        target = KNOWN_TARGETS["gemini"]
+        integrator.sync_integration(None, self.root, targets=[target])
+
+        settings = json.loads(settings_path.read_text())
+        assert settings["mcpServers"]["srv"]["command"] == "echo"
+        assert "hooks" not in settings
+
+    def test_hooks_not_deployed_without_gemini_dir(self):
+        """Hooks are not deployed when .gemini/ does not exist."""
+        shutil.rmtree(self.root / ".gemini")
+
+        from apm_cli.integration.hook_integrator import HookIntegrator
+        info = self._setup_hook_package()
+        target = KNOWN_TARGETS["gemini"]
+
+        integrator = HookIntegrator()
+        result = integrator.integrate_hooks_for_target(target, info, self.root)
+
+        assert result.files_integrated == 0
+        assert not (self.root / ".gemini").exists()
+
+
+@pytest.mark.integration
+class TestGeminiUninstallCleanup:
+    """Uninstall: verify .gemini/ files are cleaned up correctly."""
+
+    def setup_method(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        (self.root / ".gemini").mkdir()
+
+    def teardown_method(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_uninstall_cleans_commands(self):
+        """Sync removes deployed commands from .gemini/commands/."""
+        commands_dir = self.root / ".gemini" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "review.toml").write_text('prompt = "Review code"')
+
+        managed_files = {
+            ".gemini/commands/review.toml",
+        }
+
+        target = KNOWN_TARGETS["gemini"]
+        integrator = CommandIntegrator()
+        stats = integrator.sync_for_target(
+            target, None, self.root, managed_files=managed_files
+        )
+
+        assert stats["files_removed"] == 1
+        assert not (commands_dir / "review.toml").exists()
+
+    def test_uninstall_cleans_skills(self):
+        """Sync removes deployed skills from .gemini/skills/."""
+        skills_dir = self.root / ".gemini" / "skills" / "style-checker"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# Skill\nCheck style.")
+
+        managed_files = {
+            ".gemini/skills/style-checker",
+        }
+
+        integrator = SkillIntegrator()
+        stats = integrator.sync_integration(
+            None, self.root, managed_files=managed_files
+        )
+
+        assert stats["files_removed"] == 1
+        assert not skills_dir.exists()
+
+    def test_uninstall_transitive_dep_cleans_skill(self):
+        """Transitive dep skill is cleaned from .gemini/skills/ on uninstall."""
+        skill_dir = self.root / ".gemini" / "skills" / "review-and-refactor"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Transitive skill")
+
+        managed_files = {
+            ".gemini/skills/review-and-refactor",
+        }
+
+        integrator = SkillIntegrator()
+        stats = integrator.sync_integration(
+            None, self.root, managed_files=managed_files
+        )
+
+        assert stats["files_removed"] == 1
+        assert not skill_dir.exists()
+
