@@ -515,8 +515,9 @@ class MCPIntegrator:
                                     f"Removed stale MCP server '{name}' from .vscode/mcp.json"
                                 )
                             else:
-                                _rich_info(
-                                    f"+ Removed stale MCP server '{name}' from .vscode/mcp.json"
+                                _rich_success(
+                                    f"Removed stale MCP server '{name}' from .vscode/mcp.json",
+                                    symbol="check",
                                 )
                 except Exception:
                     _log.debug(
@@ -541,8 +542,9 @@ class MCPIntegrator:
                             _json.dumps(config, indent=2), encoding="utf-8"
                         )
                         for name in removed:
-                            _rich_info(
-                                f"+ Removed stale MCP server '{name}' from Copilot CLI config"
+                            _rich_success(
+                                f"Removed stale MCP server '{name}' from Copilot CLI config",
+                                symbol="check",
                             )
                 except Exception:
                     _log.debug(
@@ -565,8 +567,9 @@ class MCPIntegrator:
                     if removed:
                         codex_cfg.write_text(_toml.dumps(config), encoding="utf-8")
                         for name in removed:
-                            _rich_info(
-                                f"+ Removed stale MCP server '{name}' from Codex CLI config"
+                            _rich_success(
+                                f"Removed stale MCP server '{name}' from Codex CLI config",
+                                symbol="check",
                             )
                 except Exception:
                     _log.debug(
@@ -591,8 +594,9 @@ class MCPIntegrator:
                             _json.dumps(config, indent=2), encoding="utf-8"
                         )
                         for name in removed:
-                            _rich_info(
-                                f"+ Removed stale MCP server '{name}' from .cursor/mcp.json"
+                            _rich_success(
+                                f"Removed stale MCP server '{name}' from .cursor/mcp.json",
+                                symbol="check",
                             )
                 except Exception:
                     _log.debug(
@@ -622,8 +626,9 @@ class MCPIntegrator:
                                     f"Removed stale MCP server '{name}' from opencode.json"
                                 )
                             else:
-                                _rich_info(
-                                    f"+ Removed stale MCP server '{name}' from opencode.json"
+                                _rich_success(
+                                    f"Removed stale MCP server '{name}' from opencode.json",
+                                    symbol="check",
                                 )
                 except Exception:
                     _log.debug(
@@ -653,8 +658,9 @@ class MCPIntegrator:
                                     f"Removed stale MCP server '{name}' from .gemini/settings.json"
                                 )
                             else:
-                                _rich_info(
-                                    f"+ Removed stale MCP server '{name}' from .gemini/settings.json"
+                                _rich_success(
+                                    f"Removed stale MCP server '{name}' from .gemini/settings.json",
+                                    symbol="check",
                                 )
                 except Exception:
                     _log.debug(

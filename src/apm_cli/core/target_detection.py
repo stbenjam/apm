@@ -241,7 +241,7 @@ def get_target_description(target: UserTargetType) -> str:
         "cursor": ".cursor/agents/ + .cursor/skills/ + .cursor/rules/",
         "opencode": "AGENTS.md + .opencode/agents/ + .opencode/commands/ + .opencode/skills/",
         "codex": "AGENTS.md + .agents/skills/ + .codex/agents/ + .codex/hooks.json",
-        "gemini": ".gemini/commands/ + .gemini/rules/ + .gemini/skills/",
+        "gemini": ".gemini/commands/ + .gemini/rules/ + .gemini/skills/ + .gemini/settings.json (MCP/hooks)",
         "all": "AGENTS.md + CLAUDE.md + .github/ + .claude/ + .cursor/ + .opencode/ + .codex/ + .gemini/ + .agents/",
         "minimal": "AGENTS.md only (create a target folder for full integration)",
     }
