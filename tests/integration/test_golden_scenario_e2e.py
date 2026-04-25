@@ -108,7 +108,7 @@ def temp_e2e_home():
         test_home = os.path.join(temp_dir, 'e2e_home')
         os.makedirs(test_home)
         
-        # Set up test environment — stash original HOME so tests can
+        # Set up test environment -- stash original HOME so tests can
         # recover credentials (e.g. ADC at ~/.config/gcloud/).
         os.environ['_APM_ORIGINAL_HOME'] = original_home or ''
         os.environ['HOME'] = test_home
