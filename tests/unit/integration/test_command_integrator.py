@@ -307,7 +307,12 @@ class TestSecurityWarningsSurfaced:
 
         assert diag.security_count >= 1
         items = diag.by_category().get("security", [])
-        assert any("critical" in i.message for i in items)
+        # Critical findings must land in the critical bucket (severity), and
+        # the short message must read as critical (not be downgraded).
+        assert any(
+            i.severity == "critical" and "critical" in i.message.lower()
+            for i in items
+        )
 
     def test_warning_only_findings_recorded_in_diagnostics(self, temp_project):
         """SecurityGate warning-only findings (e.g. soft hyphen) also surface."""
@@ -332,9 +337,8 @@ class TestSecurityWarningsSurfaced:
             source, target, mock_info, source, diagnostics=diag,
         )
 
-        assert diag.security_count >= 1
         items = diag.by_category().get("security", [])
-        assert any("warning" in i.message.lower() for i in items)
+        assert any(i.severity == "warning" for i in items)
 
 
 class TestOpenCodeCommandIntegration:
@@ -552,49 +556,84 @@ class TestExtractInputNames:
     """Tests for _extract_input_names helper."""
 
     def test_none(self):
-        assert _extract_input_names(None) == []
+        assert _extract_input_names(None) == ([], [])
 
     def test_string(self):
-        assert _extract_input_names("name") == ["name"]
+        assert _extract_input_names("name") == (["name"], [])
 
     def test_simple_list(self):
-        assert _extract_input_names(["a", "b", "c"]) == ["a", "b", "c"]
+        assert _extract_input_names(["a", "b", "c"]) == (["a", "b", "c"], [])
 
     def test_object_list(self):
-        result = _extract_input_names([
+        valid, rejected = _extract_input_names([
             {"feature_name": "Name"},
             {"desc": "Description"},
         ])
-        assert result == ["feature_name", "desc"]
+        assert valid == ["feature_name", "desc"]
+        assert rejected == []
 
     def test_mixed_list(self):
-        result = _extract_input_names([
+        valid, rejected = _extract_input_names([
             "simple_arg",
             {"complex_arg": "A complex argument"},
         ])
-        assert result == ["simple_arg", "complex_arg"]
+        assert valid == ["simple_arg", "complex_arg"]
+        assert rejected == []
 
     def test_bare_dict(self):
-        result = _extract_input_names({"a": "desc a", "b": "desc b"})
-        assert result == ["a", "b"]
+        valid, rejected = _extract_input_names({"a": "desc a", "b": "desc b"})
+        assert valid == ["a", "b"]
+        assert rejected == []
 
     def test_empty_string(self):
-        assert _extract_input_names("") == []
+        assert _extract_input_names("") == ([], [])
 
     def test_whitespace_only_string(self):
-        assert _extract_input_names("   ") == []
+        assert _extract_input_names("   ") == ([], [])
 
     def test_empty_strings_in_list(self):
-        result = _extract_input_names(["name", "", "  ", "category"])
-        assert result == ["name", "category"]
+        valid, _ = _extract_input_names(["name", "", "  ", "category"])
+        assert valid == ["name", "category"]
 
     def test_empty_keys_in_dict(self):
-        result = _extract_input_names({"": "empty", "name": "ok"})
-        assert result == ["name"]
+        valid, _ = _extract_input_names({"": "empty", "name": "ok"})
+        assert valid == ["name"]
 
     def test_empty_keys_in_object_list(self):
-        result = _extract_input_names([{"": "empty"}, {"name": "ok"}])
-        assert result == ["name"]
+        valid, _ = _extract_input_names([{"": "empty"}, {"name": "ok"}])
+        assert valid == ["name"]
+
+    def test_yaml_injection_dict_key_rejected(self):
+        """A dict key with YAML-significant characters must be rejected."""
+        malicious = {"foo>\ninjected_key": "desc"}
+        valid, rejected = _extract_input_names(malicious)
+        assert valid == []
+        assert any("injected_key" in r for r in rejected)
+
+    def test_yaml_injection_list_string_rejected(self):
+        """A list string with newline/colon must be rejected."""
+        valid, rejected = _extract_input_names(["good", "bad: name", "evil\nkey"])
+        assert valid == ["good"]
+        assert "bad: name" in rejected
+        assert "evil\nkey" in rejected
+
+    def test_leading_digit_rejected(self):
+        """Names must start with a letter."""
+        valid, rejected = _extract_input_names(["1bad", "good"])
+        assert valid == ["good"]
+        assert "1bad" in rejected
+
+    def test_overlong_name_rejected(self):
+        """Names over 64 chars (1 + 63) are rejected."""
+        long_name = "a" + "b" * 64
+        valid, rejected = _extract_input_names([long_name, "ok"])
+        assert valid == ["ok"]
+        assert long_name in rejected
+
+    def test_hyphenated_name_accepted(self):
+        valid, rejected = _extract_input_names(["my-arg"])
+        assert valid == ["my-arg"]
+        assert rejected == []
 
 
 class TestInputToArgumentsEndToEnd:
@@ -825,6 +864,147 @@ class TestInputToArgumentsIntegration:
         post = frontmatter.load(target)
         assert "$my-arg" in post.content
         assert "${{input:my-arg}}" not in post.content
+
+    def test_single_brace_input_references_substituted(self, temp_project):
+        """${input:name} (single-brace, the canonical docs format) is rewritten."""
+        pkg_info = self._make_package(temp_project, {
+            "s.prompt.md": (
+                "---\n"
+                "description: Single-brace test\n"
+                "input: [name, category]\n"
+                "---\n"
+                "Create ${input:name} in ${input:category}.\n"
+            ),
+        })
+        integrator = CommandIntegrator()
+        from apm_cli.integration.targets import KNOWN_TARGETS
+        integrator.integrate_commands_for_target(
+            KNOWN_TARGETS["claude"], pkg_info, temp_project,
+        )
+
+        target = temp_project / ".claude" / "commands" / "s.md"
+        post = frontmatter.load(target)
+        assert post.metadata["arguments"] == ["name", "category"]
+        assert "$name" in post.content
+        assert "$category" in post.content
+        assert "${input:" not in post.content
+
+
+class TestInputMappingDiagnostics:
+    """Verify install-time visibility when input -> arguments mapping happens."""
+
+    @pytest.fixture
+    def temp_project(self):
+        temp_dir = tempfile.mkdtemp()
+        temp_path = Path(temp_dir)
+        (temp_path / "source").mkdir()
+        (temp_path / ".claude" / "commands").mkdir(parents=True)
+        yield temp_path
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_mapping_emits_info_diagnostic(self, temp_project):
+        """When input is mapped, an info-level diagnostic is recorded."""
+        from apm_cli.utils.diagnostics import DiagnosticCollector
+
+        source = temp_project / "source" / "review.prompt.md"
+        source.write_text(
+            "---\ndescription: Review\ninput: [feature_name, priority]\n---\n"
+            "Review ${input:feature_name} priority ${input:priority}.\n",
+            encoding="utf-8",
+        )
+        target = temp_project / ".claude" / "commands" / "review.md"
+
+        mock_info = MagicMock()
+        mock_info.package = MagicMock()
+        mock_info.package.name = "test-pkg"
+        mock_info.resolved_reference = None
+
+        diag = DiagnosticCollector()
+        CommandIntegrator().integrate_command(
+            source, target, mock_info, source, diagnostics=diag,
+        )
+
+        info_items = diag.by_category().get("info", [])
+        assert any(
+            "Mapped input -> Claude arguments" in i.message
+            and "feature_name" in i.message
+            and "priority" in i.message
+            for i in info_items
+        )
+
+    def test_yaml_injection_attempt_warns(self, temp_project):
+        """A package supplying a YAML-injecting dict key gets a warn diagnostic and the key is dropped."""
+        from apm_cli.utils.diagnostics import DiagnosticCollector
+
+        source = temp_project / "source" / "evil.prompt.md"
+        # The first entry contains a newline+colon that would inject a new key
+        # if written verbatim into YAML; the allowlist must reject it.
+        source.write_text(
+            "---\n"
+            "description: Evil\n"
+            "input:\n"
+            "  - \"foo>\\ninjected_key\": bad\n"
+            "  - good_arg: ok\n"
+            "---\n"
+            "body\n",
+            encoding="utf-8",
+        )
+        target = temp_project / ".claude" / "commands" / "evil.md"
+
+        mock_info = MagicMock()
+        mock_info.package = MagicMock()
+        mock_info.package.name = "evil-pkg"
+        mock_info.resolved_reference = None
+
+        diag = DiagnosticCollector()
+        CommandIntegrator().integrate_command(
+            source, target, mock_info, source, diagnostics=diag,
+        )
+
+        post = frontmatter.load(target)
+        assert post.metadata["arguments"] == ["good_arg"]
+        warn_items = diag.by_category().get("warning", [])
+        assert any("rejected" in w.message for w in warn_items)
+
+
+class TestSecurityScanFailClosed:
+    """Verify the security scan fails closed when the gate cannot be loaded."""
+
+    @pytest.fixture
+    def temp_project(self):
+        temp_dir = tempfile.mkdtemp()
+        temp_path = Path(temp_dir)
+        (temp_path / "source").mkdir()
+        (temp_path / ".claude" / "commands").mkdir(parents=True)
+        yield temp_path
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_import_error_re_raised(self, temp_project, monkeypatch):
+        """ImportError from SecurityGate.scan_text must propagate (fail closed)."""
+        from apm_cli.integration import command_integrator as ci
+
+        def boom(*args, **kwargs):
+            raise ImportError("simulated missing gate")
+
+        monkeypatch.setattr(ci.SecurityGate, "scan_text", boom)
+
+        source = temp_project / "source" / "x.prompt.md"
+        source.write_text(
+            "---\ndescription: X\n---\nbody\n", encoding="utf-8",
+        )
+        target = temp_project / ".claude" / "commands" / "x.md"
+
+        mock_info = MagicMock()
+        mock_info.package = MagicMock()
+        mock_info.package.name = "p"
+        mock_info.resolved_reference = None
+
+        with pytest.raises(ImportError):
+            CommandIntegrator().integrate_command(
+                source, target, mock_info, source,
+            )
+        # Fail-closed: file must NOT have been written.
+        assert not target.exists()
 
 
 # ===================================================================

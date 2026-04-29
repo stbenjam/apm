@@ -13,15 +13,31 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import frontmatter
 
 from apm_cli.integration.base_integrator import BaseIntegrator, IntegrationResult
+from apm_cli.security.gate import WARN_POLICY, SecurityGate
 from apm_cli.utils.paths import portable_relpath
 
 if TYPE_CHECKING:
     from apm_cli.integration.targets import TargetProfile
+    from apm_cli.utils.diagnostics import DiagnosticCollector
 
 logger = logging.getLogger(__name__)
 
 
-def _extract_input_names(input_spec: Any) -> List[str]:
+# Allowlist for argument names extracted from package-supplied 'input:' front-matter.
+# Restricts to identifiers that are safe to embed in YAML frontmatter and in
+# Claude command bodies as $name placeholders. Rejects YAML-significant
+# characters (newline, colon, quote, etc.) to prevent frontmatter injection.
+_INPUT_NAME_RE = re.compile(r"^[A-Za-z][\w-]{0,63}$")
+
+
+def _is_valid_input_name(name: str) -> bool:
+    """Return True if *name* is a safe argument identifier."""
+    return bool(_INPUT_NAME_RE.match(name))
+
+
+def _extract_input_names(
+    input_spec: Any,
+) -> Tuple[List[str], List[str]]:
     """Extract argument names from an APM 'input' front-matter value.
 
     Handles both formats:
@@ -34,28 +50,50 @@ def _extract_input_names(input_spec: Any) -> List[str]:
         input_spec: The raw value of the 'input' front-matter key.
 
     Returns:
-        List[str]: Ordered list of argument names, or empty list.
+        Tuple[List[str], List[str]]: (valid names in order, rejected raw entries).
+        Names are accepted only if they match ``^[A-Za-z][\\w-]{0,63}$``;
+        anything else (empty/whitespace, YAML-significant chars, oversize) is
+        rejected and reported back so the caller can surface a warning.
     """
+    valid: List[str] = []
+    rejected: List[str] = []
+
+    def _accept(candidate: Any) -> None:
+        if not isinstance(candidate, str):
+            rejected.append(repr(candidate))
+            return
+        stripped = candidate.strip()
+        if not stripped:
+            return  # silently drop pure-whitespace entries
+        if _is_valid_input_name(stripped):
+            valid.append(stripped)
+        else:
+            rejected.append(stripped)
+
     if input_spec is None:
-        return []
+        return valid, rejected
 
     if isinstance(input_spec, list):
-        names: List[str] = []
         for item in input_spec:
             if isinstance(item, str):
-                if item.strip():
-                    names.append(item)
+                _accept(item)
             elif isinstance(item, dict):
-                names.extend(k for k in item.keys() if k.strip())
-        return names
+                for k in item.keys():
+                    _accept(k)
+            else:
+                rejected.append(repr(item))
+        return valid, rejected
 
     if isinstance(input_spec, str):
-        return [input_spec] if input_spec.strip() else []
+        _accept(input_spec)
+        return valid, rejected
 
     if isinstance(input_spec, dict):
-        return [k for k in input_spec.keys() if k.strip()]
+        for k in input_spec.keys():
+            _accept(k)
+        return valid, rejected
 
-    return []
+    return valid, rejected
 
 
 # Re-export for backward compat (tests import CommandIntegrationResult)
@@ -118,7 +156,14 @@ class CommandIntegrator(BaseIntegrator):
             claude_metadata['argument-hint'] = post.metadata['argumentHint']
 
         # Map APM 'input' to Claude 'arguments' and 'argument-hint'
-        input_names = _extract_input_names(post.metadata.get('input'))
+        input_names, rejected_names = _extract_input_names(post.metadata.get('input'))
+        if rejected_names:
+            warnings.append(
+                f"input: rejected {len(rejected_names)} invalid name(s) "
+                f"(must match [A-Za-z][\\w-]{{0,63}}): "
+                f"{', '.join(rejected_names[:5])}"
+                + (" ..." if len(rejected_names) > 5 else "")
+            )
         if input_names:
             claude_metadata['arguments'] = input_names
             if 'argument-hint' not in claude_metadata:
@@ -148,7 +193,7 @@ class CommandIntegrator(BaseIntegrator):
         package_info: Any,
         original_path: Path,
         *,
-        diagnostics: Any = None,
+        diagnostics: Optional["DiagnosticCollector"] = None,
     ) -> int:
         """Integrate a prompt file as a Claude command (verbatim copy with format conversion).
 
@@ -168,38 +213,89 @@ class CommandIntegrator(BaseIntegrator):
         # Resolve context links in content
         post.content, links_resolved = self.resolve_links(post.content, source, target)
 
-        # Defense-in-depth: scan compiled command before writing
+        pkg_name = getattr(
+            getattr(package_info, "package", None), "name", "",
+        )
+
+        # Surface install-time info when input -> arguments mapping happened so
+        # users aren't surprised by content that differs from the source package.
+        mapped_args = post.metadata.get("arguments") if post.metadata else None
+        if mapped_args and diagnostics is not None:
+            diagnostics.info(
+                message=(
+                    f"Mapped input -> Claude arguments in {target.name}: "
+                    f"[{', '.join(mapped_args)}]"
+                ),
+                package=pkg_name,
+                detail=(
+                    f"${{input:name}} references in {source.name} were rewritten "
+                    f"to $name and 'argument-hint' was generated unless explicitly set."
+                ),
+            )
+
+        # Defense-in-depth: scan compiled command before writing.
+        # Fail-closed on missing/broken security gate (re-raise ImportError);
+        # other I/O-style errors are surfaced as a warning so installs stay observable.
         compiled = frontmatter.dumps(post)
+        scan_verdict = None
         try:
-            from apm_cli.security.gate import WARN_POLICY, SecurityGate
-            verdict = SecurityGate.scan_text(compiled, str(target), policy=WARN_POLICY)
-            if verdict.has_critical:
-                warnings.append(
-                    f"{target.name}: {verdict.critical_count} critical, "
-                    f"{verdict.warning_count} warning(s) hidden character finding(s) "
-                    f"-- run 'apm audit --file {target}' to inspect"
-                )
-            elif verdict.has_findings:
-                warnings.append(
-                    f"{target.name}: {verdict.warning_count} warning(s) hidden "
-                    f"character finding(s) -- run 'apm audit --file {target}' to inspect"
-                )
-        except (ImportError, OSError, ValueError) as exc:
+            scan_verdict = SecurityGate.scan_text(
+                compiled, str(target), policy=WARN_POLICY,
+            )
+        except ImportError:
+            # Missing/tampered gate must not silently become a no-op.
+            raise
+        except (OSError, ValueError) as exc:
             warnings.append(
                 f"{target.name}: security scan skipped due to scan error: {exc}"
             )
 
-        # Surface any collected warnings
-        pkg_name = getattr(
-            getattr(package_info, "package", None), "name", "",
-        )
-        for warning in warnings:
-            if diagnostics and hasattr(diagnostics, "security"):
+        security_messages: List[Tuple[str, str, str]] = []
+        if scan_verdict is not None:
+            if scan_verdict.has_critical:
+                security_messages.append(
+                    (
+                        f"Critical hidden characters in {target.name}",
+                        (
+                            f"{scan_verdict.critical_count} critical, "
+                            f"{scan_verdict.warning_count} warning(s) -- "
+                            f"run 'apm audit --file {target}' to inspect"
+                        ),
+                        "critical",
+                    )
+                )
+            elif scan_verdict.has_findings:
+                security_messages.append(
+                    (
+                        f"Hidden character warnings in {target.name}",
+                        (
+                            f"{scan_verdict.warning_count} warning(s) -- "
+                            f"run 'apm audit --file {target}' to inspect"
+                        ),
+                        "warning",
+                    )
+                )
+
+        # Surface security findings via diagnostics.security() with correct severity.
+        for message, detail, severity in security_messages:
+            if diagnostics is not None:
                 diagnostics.security(
+                    message=message,
+                    package=pkg_name,
+                    detail=detail,
+                    severity=severity,
+                )
+            else:
+                logger.warning("%s: %s", message, detail)
+
+        # Surface non-security warnings (e.g. parse / scan-error / rejected
+        # input names) via the general warning channel so they don't get
+        # miscategorized as security findings.
+        for warning in warnings:
+            if diagnostics is not None:
+                diagnostics.warn(
                     message=warning,
                     package=pkg_name,
-                    detail=warning,
-                    severity="warning",
                 )
             else:
                 logger.warning(warning)
