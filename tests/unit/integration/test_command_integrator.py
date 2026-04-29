@@ -307,7 +307,34 @@ class TestSecurityWarningsSurfaced:
 
         assert diag.security_count >= 1
         items = diag.by_category().get("security", [])
-        assert any("critical hidden characters" in i.message for i in items)
+        assert any("critical" in i.message for i in items)
+
+    def test_warning_only_findings_recorded_in_diagnostics(self, temp_project):
+        """SecurityGate warning-only findings (e.g. soft hyphen) also surface."""
+        from apm_cli.utils.diagnostics import DiagnosticCollector
+
+        source = temp_project / "source" / "warn.prompt.md"
+        # U+00AD soft hyphen is classified as a 'warning', not critical.
+        source.write_text(
+            "---\ndescription: Warn\n---\nSoft\u00adhyphen here.\n",
+            encoding="utf-8",
+        )
+        target = temp_project / ".claude" / "commands" / "warn.md"
+
+        mock_info = MagicMock()
+        mock_info.package = MagicMock()
+        mock_info.package.name = "warn-pkg"
+        mock_info.resolved_reference = None
+
+        diag = DiagnosticCollector()
+        integrator = CommandIntegrator()
+        integrator.integrate_command(
+            source, target, mock_info, source, diagnostics=diag,
+        )
+
+        assert diag.security_count >= 1
+        items = diag.by_category().get("security", [])
+        assert any("warning" in i.message.lower() for i in items)
 
 
 class TestOpenCodeCommandIntegration:

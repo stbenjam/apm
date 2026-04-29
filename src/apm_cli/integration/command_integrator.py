@@ -175,11 +175,19 @@ class CommandIntegrator(BaseIntegrator):
             verdict = SecurityGate.scan_text(compiled, str(target), policy=WARN_POLICY)
             if verdict.has_critical:
                 warnings.append(
-                    f"{target.name}: critical hidden characters "
+                    f"{target.name}: {verdict.critical_count} critical, "
+                    f"{verdict.warning_count} warning(s) hidden character finding(s) "
                     f"-- run 'apm audit --file {target}' to inspect"
                 )
-        except (ImportError, OSError, ValueError):
-            pass
+            elif verdict.has_findings:
+                warnings.append(
+                    f"{target.name}: {verdict.warning_count} warning(s) hidden "
+                    f"character finding(s) -- run 'apm audit --file {target}' to inspect"
+                )
+        except (ImportError, OSError, ValueError) as exc:
+            warnings.append(
+                f"{target.name}: security scan skipped due to scan error: {exc}"
+            )
 
         # Surface any collected warnings
         pkg_name = getattr(
