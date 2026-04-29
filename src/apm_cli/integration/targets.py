@@ -291,6 +291,9 @@ KNOWN_TARGETS: Dict[str, TargetProfile] = {
             "agents": PrimitiveMapping(
                 "agents", ".md", "cursor_agent"
             ),
+            "commands": PrimitiveMapping(
+                "commands", ".md", "cursor_command"
+            ),
             "skills": PrimitiveMapping(
                 "skills", "/SKILL.md", "skill_standard"
             ),

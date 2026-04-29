@@ -98,7 +98,13 @@ applyTo: "**/*"
 
 ### 4. Prompt / Agent Workflow (`*.prompt.md`)
 
-Executable workflows with parameters.
+Executable workflows with parameters. Deployed as slash commands to targets
+that support them:
+
+- Claude Code: `.claude/commands/*.md` (frontmatter preserved)
+- Cursor: `.cursor/commands/*.md` (frontmatter preserved)
+- OpenCode: `.opencode/commands/*.md` (frontmatter preserved)
+- Gemini CLI: `.gemini/commands/*.toml` (converted to TOML)
 
 ```yaml
 ---
