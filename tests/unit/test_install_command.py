@@ -838,6 +838,7 @@ class TestInstallGlobalFlag:
             finally:
                 os.chdir(self.original_dir)
 
+
 # ---------------------------------------------------------------------------
 # Generic-host SSH-first validation tests
 # ---------------------------------------------------------------------------
