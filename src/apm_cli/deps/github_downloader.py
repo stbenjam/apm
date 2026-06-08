@@ -1,6 +1,7 @@
 """GitHub package downloader for APM dependencies."""
 
 import contextlib
+import logging
 import os
 import re
 import subprocess
@@ -62,6 +63,9 @@ from .transport_selection import (
 _PROTOCOL_FALLBACK_DOCS_URL = (
     "https://microsoft.github.io/apm/guides/dependencies/#restoring-the-legacy-permissive-chain"
 )
+
+
+_logger = logging.getLogger(__name__)
 
 
 def _debug(message: str) -> None:
@@ -1021,11 +1025,13 @@ class GitHubPackageDownloader:
         temp_clone_path: Path,
         subdir_path: str,
         ref: str | None = None,
+        sparse_paths: list[str] | None = None,
     ) -> bool:
         """Attempt sparse-checkout to download only a subdirectory (git 2.25+).
 
         Returns True on success. Falls back silently on failure.
         """
+        checkout_paths = sparse_paths or [subdir_path]
 
         try:
             temp_clone_path.mkdir(parents=True, exist_ok=True)
@@ -1052,7 +1058,7 @@ class GitHubPackageDownloader:
                 ["git", "init"],
                 ["git", "remote", "add", "origin", auth_url],
                 ["git", "sparse-checkout", "init", "--cone"],
-                ["git", "sparse-checkout", "set", subdir_path],
+                ["git", "sparse-checkout", "set", *checkout_paths],
             ]
             fetch_cmd = ["git", "fetch", "origin"]
             fetch_cmd.append(ref or "HEAD")
@@ -1115,6 +1121,10 @@ class GitHubPackageDownloader:
         # Use user-specified ref, or None to use repo's default branch
         ref = dep_ref.reference  # None if not specified
         subdir_path = dep_ref.virtual_path
+        # Include .claude-plugin/ alongside the subdir so that
+        # marketplace.json (sibling-plugin metadata) is available
+        # during plugin synthesis.
+        _sparse_paths = [subdir_path, ".claude-plugin"]
         _perf_logger = getattr(self, "install_logger", None)
         _dep_display = str(dep_ref)
 
@@ -1161,7 +1171,7 @@ class GitHubPackageDownloader:
                     _resolved_sha_for_cache or ref,
                     locked_sha=_resolved_sha_for_cache,
                     env=self._git_env_dict(),
-                    sparse_paths=[subdir_path],
+                    sparse_paths=_sparse_paths,
                 )
             except Exception:
                 # Cache miss or failure -- fall through to normal clone path.
@@ -1192,7 +1202,7 @@ class GitHubPackageDownloader:
                         _dep_display,
                         cache_state="persistent-hit",
                         sha_short=_sha_short,
-                        sparse_paths=[subdir_path],
+                        sparse_paths=_sparse_paths,
                     )
                     _perf_logger.materialize_result(
                         sparse_applied=True,
@@ -1247,7 +1257,7 @@ class GitHubPackageDownloader:
                         _dep_display,
                         cache_state="shared-bare",
                         sha_short=ref[:12] if is_commit_sha and ref else "",
-                        sparse_paths=[subdir_path],
+                        sparse_paths=_sparse_paths,
                     )
                     _perf_logger.bare_clone_strategy(_strategy, _perf_bare_elapsed_ms)
 
@@ -1281,7 +1291,7 @@ class GitHubPackageDownloader:
                         # (subdir-agnostic) so multiple consumers
                         # requesting different subdirs of the same
                         # repo+SHA still share the object DB.
-                        sparse_paths=[subdir_path],
+                        sparse_paths=_sparse_paths,
                     )
                 except Exception as e:
                     raise RuntimeError(
@@ -1306,7 +1316,9 @@ class GitHubPackageDownloader:
                     progress_obj.update(progress_task_id, completed=20, total=100)
 
                 # Phase 4 (#171): Try sparse-checkout first (git 2.25+), fall back to full clone
-                sparse_ok = self._try_sparse_checkout(dep_ref, sparse_clone_path, subdir_path, ref)
+                sparse_ok = self._try_sparse_checkout(
+                    dep_ref, sparse_clone_path, subdir_path, ref, sparse_paths=_sparse_paths
+                )
 
                 if not sparse_ok:
                     # Full clone into a fresh subdirectory so we don't have to touch
@@ -1366,7 +1378,7 @@ class GitHubPackageDownloader:
             # Check if subdirectory exists
             source_subdir = temp_clone_path / subdir_path
             # Security: ensure subdirectory resolves within the cloned repo
-            from ..utils.path_security import ensure_path_within
+            from ..utils.path_security import PathTraversalError, ensure_path_within
 
             ensure_path_within(source_subdir, temp_clone_path)
             if not source_subdir.exists():
@@ -1394,6 +1406,29 @@ class GitHubPackageDownloader:
                     robust_copytree(src, dst)
                 else:
                     robust_copy2(src, dst)
+
+            # Copy repo-root .claude-plugin/marketplace.json (if present)
+            # so that plugin synthesis can discover sibling-plugin metadata
+            # when resolving implicit marketplace dependencies.
+            _repo_root_mkt = temp_clone_path / ".claude-plugin" / "marketplace.json"
+            if _repo_root_mkt.is_file() and not _repo_root_mkt.is_symlink():
+                _depth = len(Path(subdir_path).parts)
+                _target_repo_root = target_path
+                for _ in range(_depth):
+                    _target_repo_root = _target_repo_root.parent
+                try:
+                    ensure_path_within(target_path, _target_repo_root)
+                except PathTraversalError:
+                    _logger.warning(
+                        "marketplace.json copy for '%s' would escape install tree; "
+                        "skipping marketplace dep synthesis",
+                        dep_ref,
+                    )
+                else:
+                    _dst_mkt_dir = _target_repo_root / ".claude-plugin"
+                    _dst_mkt_dir.mkdir(parents=True, exist_ok=True)
+                    robust_copy2(_repo_root_mkt, _dst_mkt_dir / "marketplace.json")
+                    _logger.debug("Copied marketplace.json from clone to %s", _dst_mkt_dir / "marketplace.json")
 
             # Capture commit SHA; close the Repo object immediately so its file
             # handles are released before _rmtree() runs in the finally block.
@@ -1444,13 +1479,39 @@ class GitHubPackageDownloader:
             if temp_dir:
                 _rmtree(temp_dir)
 
-        # Validate the extracted package (after temp dir is cleaned up)
+        # If the plugin dir has no package signals but the parent repo's
+        # marketplace.json has metadata for it, synthesise a plugin.json
+        # so detect_package_type classifies it as MARKETPLACE_PLUGIN.
+        from .plugin_parser import synthesize_plugin_json_from_marketplace
+
+        synthesize_plugin_json_from_marketplace(target_path)
+
+        # Validate the extracted package (after temp dir is cleaned up).
+        # marketplace.json must still be present for validation because
+        # the normalization chain calls _enrich_implicit_marketplace_deps
+        # which needs to walk up and find it.
         validation_result = validate_apm_package(target_path)
         if not validation_result.is_valid:
             error_msgs = "; ".join(validation_result.errors)
             raise RuntimeError(
                 f"Subdirectory is not a valid APM package or Claude Skill: {error_msgs}"
             )
+
+        # Clean up the temporarily-copied marketplace.json now that
+        # validation (and enrichment) is complete -- it is attacker-
+        # controlled metadata that serves no purpose afterward.
+        _depth = len(Path(subdir_path).parts)
+        _cleanup_root = target_path
+        for _ in range(_depth):
+            _cleanup_root = _cleanup_root.parent
+        _tmp_mkt_dir = _cleanup_root / ".claude-plugin"
+        if _tmp_mkt_dir.is_dir():
+            try:
+                from ..utils.path_security import ensure_path_within as _epw
+                _epw(target_path, _cleanup_root)
+                _rmtree(_tmp_mkt_dir)
+            except (PathTraversalError, Exception):
+                pass
 
         # Get the resolved reference for metadata
         resolved_ref = ResolvedReference(

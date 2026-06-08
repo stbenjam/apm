@@ -21,7 +21,7 @@ from typing import Any
 import yaml
 
 from ..utils.console import _rich_warning
-from ..utils.path_security import PathTraversalError, ensure_path_within
+from ..utils.path_security import PathTraversalError, ensure_path_within, validate_path_segments
 
 _logger = logging.getLogger(__name__)
 
@@ -165,6 +165,196 @@ def normalize_plugin_directory(plugin_path: Path, plugin_json_path: Path | None 
     return synthesize_apm_yml_from_plugin(plugin_path, manifest)
 
 
+def _find_marketplace_json(plugin_path: Path) -> dict[str, Any] | None:
+    """Walk up from *plugin_path* looking for ``.claude-plugin/marketplace.json``.
+
+    Returns the parsed JSON dict if found, ``None`` otherwise.  Stops at
+    filesystem boundaries and never walks more than 10 levels up to avoid
+    runaway traversal.
+    """
+    current = plugin_path.resolve()
+    for _ in range(10):
+        candidate = current / ".claude-plugin" / "marketplace.json"
+        if candidate.is_file() and not candidate.is_symlink():
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                _logger.debug("Could not read %s: %s", candidate, exc)
+                return None
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+_RESOLVER_KEYS = frozenset({"git", "path", "marketplace", "registry", "id"})
+
+
+def _enrich_implicit_marketplace_deps(
+    deps: list[Any], plugin_path: Path
+) -> list[Any]:
+    """Resolve plugin.json deps that have ``name`` but no resolver key.
+
+    The Claude Code plugin spec allows dependencies like
+    ``{"name": "jira", "version": "^0.5.0"}`` to reference sibling plugins
+    in the same marketplace repo.  APM's ``parse_from_dict`` requires an
+    explicit resolver key (``git``, ``path``, ``marketplace``, etc.).
+
+    This function finds the repo's ``.claude-plugin/marketplace.json``,
+    looks up each implicit dep by name, and rewrites it as a
+    ``{git: parent, path: <source>}`` reference so the resolver can
+    expand it using the parent package's clone coordinates.
+
+    Deps that already carry a resolver key, or that cannot be found in
+    the marketplace manifest, are passed through unchanged.
+    """
+    if not deps:
+        return deps
+
+    implicit = [
+        d
+        for d in deps
+        if isinstance(d, dict)
+        and "name" in d
+        and not _RESOLVER_KEYS.intersection(d)
+    ]
+    if not implicit:
+        return deps
+
+    mkt_json = _find_marketplace_json(plugin_path)
+    if mkt_json is None:
+        _logger.debug(
+            "No .claude-plugin/marketplace.json found above %s; "
+            "cannot resolve implicit marketplace deps",
+            plugin_path,
+        )
+        return deps
+
+    plugins_by_name: dict[str, dict[str, Any]] = {}
+    for p in mkt_json.get("plugins", []):
+        pname = p.get("name")
+        if pname:
+            plugins_by_name[pname] = p
+
+    enriched: list[Any] = []
+    for dep in deps:
+        if not isinstance(dep, dict) or "name" not in dep or _RESOLVER_KEYS.intersection(dep):
+            enriched.append(dep)
+            continue
+        name = dep["name"]
+        plugin_entry = plugins_by_name.get(name)
+        if plugin_entry is None:
+            _surface_warning(
+                f"Implicit dependency '{name}' not found in marketplace manifest; "
+                "add an explicit git/marketplace resolver to plugin.json",
+                _logger,
+            )
+            enriched.append(dep)
+            continue
+        source = plugin_entry.get("source", "")
+        if not isinstance(source, str):
+            _surface_warning(
+                f"Marketplace plugin '{name}' references an external repository; "
+                "add an explicit git resolver to plugin.json dependencies",
+                _logger,
+            )
+            enriched.append(dep)
+            continue
+        source = source.removeprefix("./")
+        if not source:
+            _surface_warning(
+                f"Marketplace plugin '{name}' has no source path; "
+                "add an explicit git/marketplace resolver to plugin.json",
+                _logger,
+            )
+            enriched.append(dep)
+            continue
+        try:
+            validate_path_segments(source, context="marketplace plugin source")
+        except PathTraversalError:
+            _surface_warning(
+                f"Marketplace plugin '{name}' has an invalid source path; "
+                "passing through unchanged",
+                _logger,
+            )
+            enriched.append(dep)
+            continue
+        # Version constraints are intentionally dropped: git:parent deps
+        # pin to the parent's ref, so the version always matches what
+        # ships with that ref.
+        enriched.append({"git": "parent", "path": source})
+        _logger.debug(
+            "Rewrote implicit dep '%s' -> {git: parent, path: %s}",
+            name,
+            source,
+        )
+    return enriched
+
+
+def synthesize_plugin_json_from_marketplace(plugin_path: Path) -> bool:
+    """Create a ``plugin.json`` from marketplace.json when the plugin dir has none.
+
+    Some marketplace plugins store all metadata (name, lspServers, mcpServers,
+    etc.) in the repo-root ``marketplace.json`` rather than in a per-plugin
+    ``plugin.json``.  When the plugin directory contains no recognisable
+    package signals (no plugin.json, apm.yml, SKILL.md, or .claude-plugin/),
+    this function looks up the plugin by directory name in the parent repo's
+    marketplace.json and writes a synthesised ``plugin.json`` so the standard
+    validation / synthesis pipeline can proceed.
+
+    Returns ``True`` if a plugin.json was written, ``False`` otherwise.
+    """
+    if (plugin_path / "plugin.json").exists():
+        return False
+    if (plugin_path / "apm.yml").exists():
+        return False
+    if (plugin_path / "SKILL.md").exists():
+        return False
+    if (plugin_path / ".claude-plugin").is_dir():
+        return False
+
+    mkt_json = _find_marketplace_json(plugin_path)
+    if mkt_json is None:
+        return False
+
+    plugin_name = plugin_path.name
+    plugin_entry: dict[str, Any] | None = None
+    for p in mkt_json.get("plugins", []):
+        source = p.get("source", "")
+        if not isinstance(source, str):
+            continue
+        source = source.removeprefix("./")
+        if source.rstrip("/").rsplit("/", 1)[-1] == plugin_name:
+            plugin_entry = p
+            break
+        if p.get("name") == plugin_name:
+            plugin_entry = p
+            break
+
+    if plugin_entry is None:
+        return False
+
+    manifest: dict[str, Any] = {}
+    for key in (
+        "name", "description", "version", "author",
+        "dependencies", "mcpServers", "lspServers", "strict",
+    ):
+        if key in plugin_entry:
+            manifest[key] = plugin_entry[key]
+
+    if not manifest.get("name"):
+        manifest["name"] = plugin_name
+
+    pj_path = plugin_path / "plugin.json"
+    pj_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _logger.info(
+        "Synthesised plugin.json for '%s' from marketplace metadata",
+        plugin_name,
+    )
+    return True
+
+
 def synthesize_apm_yml_from_plugin(plugin_path: Path, manifest: dict[str, Any]) -> Path:
     """Synthesize apm.yml from plugin metadata.
 
@@ -182,6 +372,13 @@ def synthesize_apm_yml_from_plugin(plugin_path: Path, manifest: dict[str, Any]) 
     """
     if not manifest.get("name"):
         manifest["name"] = plugin_path.name
+
+    # Enrich implicit marketplace deps (name-only, no resolver key) into
+    # git:parent references so parse_from_dict can handle them.
+    if manifest.get("dependencies"):
+        manifest["dependencies"] = _enrich_implicit_marketplace_deps(
+            manifest["dependencies"], plugin_path
+        )
 
     # Create .apm directory structure
     apm_dir = plugin_path / ".apm"

@@ -9,13 +9,16 @@ import yaml
 
 from apm_cli.deps.plugin_parser import (
     PluginIntegrityError,
+    _enrich_implicit_marketplace_deps,
     _extract_mcp_servers,
+    _find_marketplace_json,
     _generate_apm_yml,
     _map_plugin_artifacts,
     _mcp_servers_to_apm_deps,
     normalize_plugin_directory,
     parse_plugin_manifest,
     synthesize_apm_yml_from_plugin,
+    synthesize_plugin_json_from_marketplace,
     validate_plugin_package,
 )
 from apm_cli.utils.helpers import find_plugin_json
@@ -1173,3 +1176,365 @@ class TestMapPluginArtifactsPrePositioned:
         assert not (sentinel / "evil.md").exists(), (
             "copytree(dirs_exist_ok=True) followed a dst symlink and wrote outside the plugin root"
         )
+
+
+# ---------------------------------------------------------------------------
+# Implicit marketplace dependency enrichment
+# ---------------------------------------------------------------------------
+
+def _make_marketplace_repo(tmp_path, plugins=None):
+    """Helper: create a minimal marketplace repo layout under *tmp_path*.
+
+    Returns the repo root.
+    """
+    if plugins is None:
+        plugins = [
+            {"name": "jira", "source": "./plugins/jira", "version": "0.7.1"},
+            {"name": "ci", "source": "./plugins/ci", "version": "0.0.45"},
+            {"name": "golang", "source": "./plugins/golang", "version": "0.3.0"},
+        ]
+    mkt_dir = tmp_path / ".claude-plugin"
+    mkt_dir.mkdir(parents=True, exist_ok=True)
+    mkt_json = {"name": "test-marketplace", "plugins": plugins}
+    (mkt_dir / "marketplace.json").write_text(json.dumps(mkt_json))
+    return tmp_path
+
+
+class TestFindMarketplaceJson:
+    def test_found_in_parent(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "my-plugin"
+        plugin_dir.mkdir(parents=True)
+        result = _find_marketplace_json(plugin_dir)
+        assert result is not None
+        assert result["name"] == "test-marketplace"
+
+    def test_found_in_same_dir(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        result = _find_marketplace_json(tmp_path)
+        assert result is not None
+        assert result["name"] == "test-marketplace"
+
+    def test_not_found(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "my-plugin"
+        plugin_dir.mkdir(parents=True)
+        assert _find_marketplace_json(plugin_dir) is None
+
+    def test_invalid_json(self, tmp_path):
+        mkt_dir = tmp_path / ".claude-plugin"
+        mkt_dir.mkdir()
+        (mkt_dir / "marketplace.json").write_text("{invalid")
+        assert _find_marketplace_json(tmp_path) is None
+
+    def test_ignores_symlinked_marketplace_json(self, tmp_path):
+        """Symlinked marketplace.json is skipped for defense-in-depth."""
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "marketplace.json").write_text('{"name": "evil"}')
+        mkt_dir = tmp_path / ".claude-plugin"
+        mkt_dir.mkdir()
+        try:
+            (mkt_dir / "marketplace.json").symlink_to(external / "marketplace.json")
+        except OSError:
+            pytest.skip("Symlinks not supported on this platform")
+        assert _find_marketplace_json(tmp_path) is None
+
+
+class TestEnrichImplicitMarketplaceDeps:
+    def test_rewrites_name_only_deps(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        deps = [
+            {"name": "jira", "version": "^0.5.0"},
+            {"name": "ci"},
+        ]
+        result = _enrich_implicit_marketplace_deps(deps, plugin_dir)
+        assert result == [
+            {"git": "parent", "path": "plugins/jira"},
+            {"git": "parent", "path": "plugins/ci"},
+        ]
+
+    def test_preserves_explicit_marketplace_deps(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        dep = {"name": "prodsec", "marketplace": "prodsec-skills"}
+        result = _enrich_implicit_marketplace_deps([dep], plugin_dir)
+        assert result == [dep]
+
+    def test_preserves_git_deps(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        dep = {"git": "https://github.com/acme/repo.git", "path": "plugins/foo"}
+        result = _enrich_implicit_marketplace_deps([dep], plugin_dir)
+        assert result == [dep]
+
+    def test_preserves_string_deps(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        result = _enrich_implicit_marketplace_deps(["acme/repo"], plugin_dir)
+        assert result == ["acme/repo"]
+
+    def test_unknown_plugin_passed_through(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        dep = {"name": "unknown-plugin", "version": "^1.0"}
+        result = _enrich_implicit_marketplace_deps([dep], plugin_dir)
+        assert result == [dep]
+
+    def test_no_marketplace_json_passes_through(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        dep = {"name": "jira", "version": "^0.5.0"}
+        result = _enrich_implicit_marketplace_deps([dep], plugin_dir)
+        assert result == [dep]
+
+    def test_empty_deps(self, tmp_path):
+        assert _enrich_implicit_marketplace_deps([], tmp_path) == []
+
+    def test_none_deps(self, tmp_path):
+        assert _enrich_implicit_marketplace_deps(None, tmp_path) is None
+
+    def test_strips_dot_slash_from_source(self, tmp_path):
+        _make_marketplace_repo(tmp_path, plugins=[
+            {"name": "foo", "source": "./deep/nested/plugin"},
+        ])
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        result = _enrich_implicit_marketplace_deps(
+            [{"name": "foo"}], plugin_dir
+        )
+        assert result == [{"git": "parent", "path": "deep/nested/plugin"}]
+
+    @pytest.mark.parametrize("source", ["", "./"])
+    def test_empty_source_passed_through(self, tmp_path, source):
+        """When source is empty or just './', dep is passed through unchanged."""
+        _make_marketplace_repo(tmp_path, plugins=[
+            {"name": "root-plugin", "source": source},
+        ])
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        dep = {"name": "root-plugin", "version": "^1.0.0"}
+        result = _enrich_implicit_marketplace_deps([dep], plugin_dir)
+        assert result == [dep]
+
+    def test_mixed_deps(self, tmp_path):
+        """Mixture of implicit, explicit-marketplace, git, and string deps."""
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        deps = [
+            {"name": "jira", "version": "^0.5.0"},
+            {"name": "prodsec", "marketplace": "prodsec-skills"},
+            {"git": "https://github.com/acme/repo.git"},
+            "acme/other",
+        ]
+        result = _enrich_implicit_marketplace_deps(deps, plugin_dir)
+        assert result == [
+            {"git": "parent", "path": "plugins/jira"},
+            {"name": "prodsec", "marketplace": "prodsec-skills"},
+            {"git": "https://github.com/acme/repo.git"},
+            "acme/other",
+        ]
+
+    def test_dict_source_passed_through(self, tmp_path):
+        """When source is a dict (external repo), dep is passed through unchanged."""
+        _make_marketplace_repo(tmp_path, plugins=[
+            {"name": "ext-plugin", "source": {"git": "https://github.com/other/repo"}},
+        ])
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        dep = {"name": "ext-plugin", "version": "^1.0.0"}
+        result = _enrich_implicit_marketplace_deps([dep], plugin_dir)
+        assert result == [dep]
+
+    def test_traversal_source_passed_through(self, tmp_path):
+        """Source with path traversal is rejected and dep passed through."""
+        _make_marketplace_repo(tmp_path, plugins=[
+            {"name": "evil", "source": "../../etc/passwd"},
+        ])
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        dep = {"name": "evil", "version": "^1.0.0"}
+        result = _enrich_implicit_marketplace_deps([dep], plugin_dir)
+        assert result == [dep]
+
+
+class TestSynthesizeWithImplicitDeps:
+    """Integration: synthesize_apm_yml_from_plugin handles implicit marketplace deps."""
+
+    def test_synthesized_yml_has_parent_deps(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        manifest = {
+            "name": "bundle",
+            "version": "1.0.0",
+            "dependencies": [
+                {"name": "jira", "version": "^0.5.0"},
+                {"name": "prodsec", "marketplace": "prodsec-skills"},
+            ],
+        }
+        apm_yml_path = synthesize_apm_yml_from_plugin(plugin_dir, manifest)
+        content = yaml.safe_load(apm_yml_path.read_text())
+
+        apm_deps = content["dependencies"]["apm"]
+        assert {"git": "parent", "path": "plugins/jira"} in apm_deps
+        assert {"name": "prodsec", "marketplace": "prodsec-skills"} in apm_deps
+
+
+class TestSynthesizePluginJsonFromMarketplace:
+    """Synthesize plugin.json from marketplace.json for bare plugin dirs."""
+
+    def test_creates_plugin_json_with_lsp_servers(self, tmp_path):
+        _make_marketplace_repo(tmp_path, plugins=[
+            {
+                "name": "gopls-lsp",
+                "description": "Go language server",
+                "version": "1.0.0",
+                "source": "./plugins/gopls-lsp",
+                "lspServers": {
+                    "gopls": {
+                        "command": "gopls",
+                        "extensionToLanguage": {".go": "go"},
+                    }
+                },
+            },
+        ])
+        plugin_dir = tmp_path / "plugins" / "gopls-lsp"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "README.md").write_text("# gopls")
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is True
+
+        pj = json.loads((plugin_dir / "plugin.json").read_text())
+        assert pj["name"] == "gopls-lsp"
+        assert pj["description"] == "Go language server"
+        assert "gopls" in pj["lspServers"]
+
+    def test_skips_when_plugin_json_exists(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "jira"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text('{"name": "jira"}')
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is False
+
+    def test_skips_when_apm_yml_exists(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "jira"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "apm.yml").write_text("name: jira")
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is False
+
+    def test_skips_when_skill_md_exists(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "jira"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "SKILL.md").write_text("# Skill")
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is False
+
+    def test_skips_when_claude_plugin_dir_exists(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "jira"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / ".claude-plugin").mkdir()
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is False
+
+    def test_returns_false_no_marketplace(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "unknown"
+        plugin_dir.mkdir(parents=True)
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is False
+
+    def test_returns_false_plugin_not_in_manifest(self, tmp_path):
+        _make_marketplace_repo(tmp_path)
+        plugin_dir = tmp_path / "plugins" / "nonexistent"
+        plugin_dir.mkdir(parents=True)
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is False
+
+    def test_matches_by_source_dir_name(self, tmp_path):
+        """Plugin source dir name differs from plugin name."""
+        _make_marketplace_repo(tmp_path, plugins=[
+            {
+                "name": "operator-dashboard",
+                "source": "./plugins/ai-operator-dashboard-generator",
+                "version": "0.0.1",
+                "description": "Dashboard gen",
+            },
+        ])
+        plugin_dir = tmp_path / "plugins" / "ai-operator-dashboard-generator"
+        plugin_dir.mkdir(parents=True)
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is True
+        pj = json.loads((plugin_dir / "plugin.json").read_text())
+        assert pj["name"] == "operator-dashboard"
+
+    def test_forwards_mcp_servers(self, tmp_path):
+        _make_marketplace_repo(tmp_path, plugins=[
+            {
+                "name": "my-mcp",
+                "source": "./plugins/my-mcp",
+                "version": "1.0.0",
+                "mcpServers": {
+                    "my-server": {"command": "my-server-bin"}
+                },
+            },
+        ])
+        plugin_dir = tmp_path / "plugins" / "my-mcp"
+        plugin_dir.mkdir(parents=True)
+
+        synthesize_plugin_json_from_marketplace(plugin_dir)
+        pj = json.loads((plugin_dir / "plugin.json").read_text())
+        assert "my-server" in pj["mcpServers"]
+
+    def test_skips_dict_source_entries(self, tmp_path):
+        """Plugin entries with dict source (external repo) are skipped during matching."""
+        _make_marketplace_repo(tmp_path, plugins=[
+            {"name": "ext-plugin", "source": {"git": "https://github.com/other/repo"}},
+            {"name": "local-plugin", "source": "./plugins/local-plugin", "version": "1.0.0"},
+        ])
+        plugin_dir = tmp_path / "plugins" / "local-plugin"
+        plugin_dir.mkdir(parents=True)
+
+        assert synthesize_plugin_json_from_marketplace(plugin_dir) is True
+        pj = json.loads((plugin_dir / "plugin.json").read_text())
+        assert pj["name"] == "local-plugin"
+
+    def test_forwards_dependencies(self, tmp_path):
+        _make_marketplace_repo(tmp_path, plugins=[
+            {
+                "name": "bundle",
+                "source": "./plugins/bundle",
+                "version": "1.0.0",
+                "dependencies": [
+                    {"name": "jira", "version": "^0.5.0"},
+                ],
+            },
+        ])
+        plugin_dir = tmp_path / "plugins" / "bundle"
+        plugin_dir.mkdir(parents=True)
+
+        synthesize_plugin_json_from_marketplace(plugin_dir)
+        pj = json.loads((plugin_dir / "plugin.json").read_text())
+        assert pj["dependencies"] == [{"name": "jira", "version": "^0.5.0"}]

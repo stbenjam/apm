@@ -1278,7 +1278,8 @@ class TestDownloadSubdirectoryPackageWindowsCleanup:
         fake_repo = MagicMock()
         fake_repo.head.commit.hexsha = "abc1234"
 
-        def fake_sparse(dep_ref, clone_path, subdir, ref):
+        def fake_sparse(dep_ref, clone_path, subdir, ref, sparse_paths=None):
+            assert sparse_paths is not None and ".claude-plugin" in sparse_paths
             # Simulate sparse checkout writing the subdir
             (clone_path / subdir).mkdir(parents=True, exist_ok=True)
             (clone_path / subdir / "apm.yml").write_text("name: test-pkg\nversion: 1.0.0\n")
@@ -1332,6 +1333,149 @@ class TestDownloadSubdirectoryPackageWindowsCleanup:
         # Full clone must NOT reuse the sparse-checkout path "repo/"
         assert len(cloned_paths) == 1
         assert cloned_paths[0].name == "repo_clone"
+
+
+class TestMarketplaceJsonPipeline:
+    """Verify the marketplace.json copy -> synthesis -> validate -> cleanup pipeline."""
+
+    def _make_dep_ref(self):
+        return DependencyReference.parse("owner/repo/plugins/gopls-lsp")
+
+    def test_marketplace_json_copy_synthesis_and_cleanup(self, tmp_path):
+        """Full pipeline: sparse checkout includes .claude-plugin, marketplace.json
+        is copied to install tree, synthesize_plugin_json_from_marketplace creates
+        plugin.json, validation succeeds, and marketplace.json is cleaned up."""
+        import json
+
+        downloader = GitHubPackageDownloader()
+        dep = self._make_dep_ref()
+        # target_path is where the plugin ends up; repo root is 2 levels up
+        # (plugins/gopls-lsp -> virtual_path depth = 2)
+        repo_root = tmp_path / "apm_modules" / "owner" / "repo"
+        target = repo_root / "plugins" / "gopls-lsp"
+
+        marketplace_data = {
+            "name": "test-marketplace",
+            "plugins": [
+                {
+                    "name": "gopls-lsp",
+                    "description": "Go language server",
+                    "version": "1.0.0",
+                    "source": "./plugins/gopls-lsp",
+                    "lspServers": {
+                        "gopls": {
+                            "command": "gopls",
+                            "extensionToLanguage": {".go": "go"},
+                        }
+                    },
+                },
+            ],
+        }
+
+        def fake_sparse(dep_ref, clone_path, subdir, ref, sparse_paths=None):
+            assert sparse_paths is not None
+            assert ".claude-plugin" in sparse_paths
+            # Simulate sparse checkout writing the subdir (bare plugin, no plugin.json)
+            plugin_dir = clone_path / subdir
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "README.md").write_text("# gopls-lsp")
+            # Simulate sparse checkout also writing .claude-plugin/marketplace.json
+            mkt_dir = clone_path / ".claude-plugin"
+            mkt_dir.mkdir(parents=True, exist_ok=True)
+            (mkt_dir / "marketplace.json").write_text(json.dumps(marketplace_data))
+            return True
+
+        fake_repo = MagicMock()
+        fake_repo.head.commit.hexsha = "abc1234"
+
+        with (
+            patch.object(downloader, "_try_sparse_checkout", side_effect=fake_sparse),
+            patch("apm_cli.deps.github_downloader.Repo", return_value=fake_repo),
+            patch("apm_cli.deps.github_downloader._close_repo"),
+        ):
+            result = downloader.download_subdirectory_package(dep, target)
+
+        # plugin.json should have been synthesized from marketplace metadata
+        pj = target / "plugin.json"
+        assert pj.exists(), "plugin.json should have been synthesized"
+        pj_data = json.loads(pj.read_text())
+        assert pj_data["name"] == "gopls-lsp"
+        assert "gopls" in pj_data.get("lspServers", {})
+
+        # marketplace.json should have been cleaned up after validation
+        mkt_copy = repo_root / ".claude-plugin"
+        assert not mkt_copy.exists(), (
+            ".claude-plugin/marketplace.json should be cleaned up after validation"
+        )
+
+        # The install should have succeeded
+        assert result is not None
+
+    def test_marketplace_json_enriches_deps_during_validation(self, tmp_path):
+        """Marketplace.json must survive until validation so implicit deps
+        can be enriched by _enrich_implicit_marketplace_deps."""
+        import json
+        import yaml
+
+        downloader = GitHubPackageDownloader()
+        dep = self._make_dep_ref()
+        repo_root = tmp_path / "apm_modules" / "owner" / "repo"
+        target = repo_root / "plugins" / "gopls-lsp"
+
+        marketplace_data = {
+            "name": "test-marketplace",
+            "plugins": [
+                {
+                    "name": "gopls-lsp",
+                    "source": "./plugins/gopls-lsp",
+                    "version": "1.0.0",
+                    "dependencies": [
+                        {"name": "helper", "version": "^1.0.0"},
+                    ],
+                },
+                {
+                    "name": "helper",
+                    "source": "./plugins/helper",
+                    "version": "1.0.0",
+                },
+            ],
+        }
+
+        def fake_sparse(dep_ref, clone_path, subdir, ref, sparse_paths=None):
+            plugin_dir = clone_path / subdir
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "README.md").write_text("# gopls-lsp")
+            mkt_dir = clone_path / ".claude-plugin"
+            mkt_dir.mkdir(parents=True, exist_ok=True)
+            (mkt_dir / "marketplace.json").write_text(json.dumps(marketplace_data))
+            return True
+
+        fake_repo = MagicMock()
+        fake_repo.head.commit.hexsha = "abc1234"
+
+        with (
+            patch.object(downloader, "_try_sparse_checkout", side_effect=fake_sparse),
+            patch("apm_cli.deps.github_downloader.Repo", return_value=fake_repo),
+            patch("apm_cli.deps.github_downloader._close_repo"),
+        ):
+            result = downloader.download_subdirectory_package(dep, target)
+
+        # The synthesized plugin.json should have implicit deps
+        pj_data = json.loads((target / "plugin.json").read_text())
+        assert pj_data["dependencies"] == [{"name": "helper", "version": "^1.0.0"}]
+
+        # The generated apm.yml should have the enriched dep
+        apm_yml = target / "apm.yml"
+        assert apm_yml.exists(), "apm.yml should have been generated"
+        apm_data = yaml.safe_load(apm_yml.read_text())
+        apm_deps = apm_data.get("dependencies", {}).get("apm", [])
+        assert {"git": "parent", "path": "plugins/helper"} in apm_deps, (
+            "Implicit dep should be enriched to git:parent during validation "
+            "(marketplace.json must not be deleted before validation)"
+        )
+
+        # Cleanup should still happen
+        assert not (repo_root / ".claude-plugin").exists()
 
 
 class TestGitEnvironmentPlatformBehavior:
